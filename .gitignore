@@ -11,3 +11,5 @@ target/
 /.idea/
 /doc/
 /.vscode/
+/.mvn/maven-settings.xml
+/.mvn/
