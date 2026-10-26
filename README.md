@@ -32,7 +32,7 @@ SDK 尚未发布到中央仓库，先在 SDK 工程目录（`pom.xml` 所在处�
 mvn clean install
 ```
 
-产物 `com.lx.utils:spring-boot-ai-agent-starter:1.0.0-SNAPSHOT` 会安装到本地 Maven 仓库（`~/.m2/repository`）。
+产物 `io.github.j2cuckoo:spring-boot-ai-agent-starter:1.0.0-SNAPSHOT` 会安装到本地 Maven 仓库（`~/.m2/repository`）。
 
 ### 1.2 Maven 引入
 
@@ -40,7 +40,7 @@ mvn clean install
 
 ```xml
 <dependency>
-    <groupId>com.lx.utils</groupId>
+    <groupId>io.github.j2cuckoo</groupId>
     <artifactId>spring-boot-ai-agent-starter</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
@@ -49,7 +49,7 @@ mvn clean install
 Gradle（Groovy DSL）：
 
 ```groovy
-implementation 'com.lx.utils:spring-boot-ai-agent-starter:1.0.0-SNAPSHOT'
+implementation 'io.github.j2cuckoo:spring-boot-ai-agent-starter:1.0.0-SNAPSHOT'
 ```
 
 `spring-boot-autoconfigure` 版本由宿主的 Spring Boot BOM / parent 统一管理，Starter 内不写死。传输层（Netty）、响应式（Reactor）、JSON（Jackson）等会随本依赖自动传递。
