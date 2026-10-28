@@ -1,6 +1,5 @@
 package com.agent.config;
 
-import com.agent.model.ProviderType;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.util.unit.DataSize;
 
@@ -530,18 +529,23 @@ public class AgentProperties {
     // ---------------------------------------------------------------- providers / models
 
     public static class ProviderProps {
-        private ProviderType type;
+        /**
+         * 协议类型：OPENAI / CLAUDE / GEMINI / OLLAMA / CUSTOM（大小写不敏感，可省略）。
+         * 未识别的值（如 deepseek、moonshot 等 OpenAI 兼容厂商名）按 CUSTOM（OpenAI 兼容协议）处理并告警，
+         * 不会导致启动失败。
+         */
+        private String type;
         private String baseUrl;
         private String apiKey;
         private Duration timeout;
         private int maxRetries;
         private Map<String, String> headers = new LinkedHashMap<>();
 
-        public ProviderType getType() {
+        public String getType() {
             return type;
         }
 
-        public void setType(ProviderType type) {
+        public void setType(String type) {
             this.type = type;
         }
 

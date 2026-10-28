@@ -105,7 +105,7 @@ public class AgentAutoConfiguration {
     public ProviderRegistry providerRegistry(AgentProperties props) {
         ProviderRegistry registry = new ProviderRegistry();
         props.getProviders().forEach((name, p) -> {
-            Provider.Builder builder = Provider.builder(name, p.getType())
+            Provider.Builder builder = Provider.builder(name, normalizeProviderType(p.getType(), name))
                     .baseUrl(p.getBaseUrl())
                     .apiKey(p.getApiKey());
             if (p.getTimeout() != null) {
@@ -118,6 +118,23 @@ public class AgentAutoConfiguration {
             registry.register(builder.build());
         });
         return registry;
+    }
+
+    /**
+     * 归一化提供商类型：大小写不敏感匹配枚举；缺省或未识别的值
+     * （如 deepseek、moonshot 等 OpenAI 兼容厂商名）按 CUSTOM（OpenAI 兼容协议）处理并告警。
+     */
+    static com.agent.model.ProviderType normalizeProviderType(String raw, String providerName) {
+        if (raw == null || raw.isBlank()) {
+            return com.agent.model.ProviderType.CUSTOM;
+        }
+        try {
+            return com.agent.model.ProviderType.valueOf(raw.trim().toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            log.warn("provider[{}].type={} 未识别，按 CUSTOM（OpenAI 兼容协议）处理；"
+                    + "可选值：OPENAI/CLAUDE/GEMINI/OLLAMA/CUSTOM", providerName, raw);
+            return com.agent.model.ProviderType.CUSTOM;
+        }
     }
 
     @Bean
