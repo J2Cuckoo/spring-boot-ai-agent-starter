@@ -60,7 +60,7 @@ public final class ModelInferenceStep implements WorkflowStep {
         if (model != null && !model.isBlank()) {
             conversation.using(model);
         }
-        return conversation.writeStream()
+        return conversation.agent().executeEvents(conversation, true)
                 .doOnNext(e -> {
                     if (e instanceof ChatEvent.TokenEvent t) {
                         content.append(t.delta() == null ? "" : t.delta());

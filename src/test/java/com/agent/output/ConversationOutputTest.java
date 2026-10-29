@@ -99,9 +99,9 @@ class ConversationOutputTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void writeJsonParsesAndStripsFence() throws Exception {
+    void writeTypeParsesAndStripsFence() throws Exception {
         server.enqueue(new MockResponse().setBody(openaiBody("```json\n{\"city\":\"北京\",\"temp\":26}\n```")));
-        Map<String, Object> weather = agent.chat("北京天气").writeJson(Map.class);
+        Map<String, Object> weather = agent.chat("北京天气").write(Map.class);
         assertThat(weather).containsEntry("city", "北京").containsEntry("temp", 26);
 
         okhttp3.mockwebserver.RecordedRequest recorded = server.takeRequest();
@@ -109,15 +109,15 @@ class ConversationOutputTest {
     }
 
     @Test
-    void writeJsonFailsAfterRetry() {
+    void writeTypeFailsAfterRetry() {
         server.enqueue(new MockResponse().setBody(openaiBody("这不是 JSON")));
         server.enqueue(new MockResponse().setBody(openaiBody("仍然不是 JSON")));
-        assertThatThrownBy(() -> agent.chat("输出 JSON").writeJson(Map.class))
+        assertThatThrownBy(() -> agent.chat("输出 JSON").write(Map.class))
                 .isInstanceOf(JsonOutputException.class);
     }
 
     @Test
-    void writeStreamEmitsEvents() {
+    void streamSubscribeWriteEmitsEventsInOrder() {
         server.enqueue(new MockResponse()
                 .setHeader("Content-Type", "text/event-stream")
                 .setBody("data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n"
@@ -125,34 +125,63 @@ class ConversationOutputTest {
                         + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"
                         + "\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n"
                         + "data: [DONE]\n\n"));
-        Flux<ChatEvent> flux = agent.chat("写问候").writeStream();
         StringBuilder text = new StringBuilder();
-        StepVerifier.create(flux)
-                .thenConsumeWhile(e -> {
+        java.util.List<String> finishes = new java.util.ArrayList<>();
+        // 用户 DSL：.stream() → .subscribe(...) → .write()（write 永远是结尾，阻塞至流完成）
+        agent.chat("写问候")
+                .stream()
+                .subscribe(e -> {
                     if (e instanceof ChatEvent.TokenEvent t) {
                         text.append(t.delta());
-                        return true;
                     }
-                    return !(e instanceof ChatEvent.DoneEvent);
                 })
-                .expectNextMatches(e -> e instanceof ChatEvent.DoneEvent)
-                .expectComplete()
-                .verify(java.time.Duration.ofSeconds(10));
+                .subscribe(new com.agent.contract.ChatStreamSubscriber() {
+                    @Override
+                    public void onComplete(String finishReason) {
+                        finishes.add(finishReason);
+                    }
+                })
+                .write();
         assertThat(text.toString()).isEqualTo("Hello");
+        assertThat(finishes).contains("stop");   // DoneEvent 的 finishReason 已分发
     }
 
     @Test
-    void writeFileProducesEnvelope(@TempDir Path dir) throws Exception {
+    void streamModeLocksBlockingTerminals() {
+        server.enqueue(new MockResponse().setBody(openaiBody("x")));
+        com.agent.output.Conversation c = agent.chat("你好");
+        c.stream();                                       // 进入流式模式
+        org.assertj.core.api.Assertions.assertThatThrownBy(c::write)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("流式模式");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> c.temperature(0.5))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("流式模式");
+    }
+
+    @Test
+    void writeAgentFileRefReturnsMetadata(@TempDir Path dir) throws Exception {
         server.enqueue(new MockResponse().setBody(openaiBody("报告正文")));
-        agent.chat("生成报告").writeFile(dir.toString(), "report.json");
-        Path file = dir.resolve("report.json");
-        assertThat(file).exists();
-        String content = Files.readString(file);
+        AgentFile file = agent.chat("生成报告")
+                .write(AgentFileRef.of(dir.toString(), "report.json"));
+
+        Path written = dir.resolve("report.json");
+        assertThat(written).exists();
+        String content = Files.readString(written);
         assertThat(content).contains("\"format\" : \"text\"");
         assertThat(content).contains("\"model\" : \"openai:m\"");
-        assertThat(content).contains("\"provider\" : \"openai\"");
         assertThat(content).contains("报告正文");
         assertThat(content).contains("\"totalTokens\" : 7");
+
+        // AgentFile 元数据完整
+        assertThat(file.absolutePath()).isEqualTo(written.toAbsolutePath().toString());
+        assertThat(file.relativePath()).isEqualTo(dir.toString());
+        assertThat(file.fileName()).isEqualTo("report.json");
+        assertThat(file.fileType()).isEqualTo("json");
+        assertThat(file.sizeBytes()).isEqualTo(Files.size(written));
+        // 国密 SM3：64 位十六进制
+        assertThat(file.sm3()).matches("[0-9a-f]{64}");
+        assertThat(file.finishedAt()).isNotBlank();
     }
 
     @Test

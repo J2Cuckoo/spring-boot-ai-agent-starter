@@ -1,13 +1,11 @@
 package com.agent.output;
 
 import com.agent.Agent;
-import com.agent.contract.ChatEvent;
 import com.agent.contract.ChatRequest;
 import com.agent.contract.ChatResponse;
 import com.agent.contract.Message;
 import com.agent.contract.ToolSpec;
 import com.agent.serialize.JacksonConfig;
-import reactor.core.publisher.Flux;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -37,6 +35,7 @@ public final class Conversation {
     private String using;
     private final List<ToolSpec> tools = new ArrayList<>();
     private boolean terminated;
+    private boolean streamMode;
 
     public Conversation(Agent agent, String prompt) {
         this.agent = agent;
@@ -114,29 +113,102 @@ public final class Conversation {
         return this;
     }
 
+    // ------------------------------------------------------------ 请求级 RAG / 记忆设置
+
+    private RagSettings ragSettings;
+    private MemorySettings memorySettings;
+
+    /** 请求级 RAG 设置：{@code .rag().maxResults(5).minScore(0.6)...}（须全局已装配 RAG 拦截器）。 */
+    public RagSettings rag() {
+        requireActive();
+        if (ragSettings == null) {
+            ragSettings = new RagSettings(this);
+        }
+        return ragSettings;
+    }
+
+    /** consumer 形式：{@code .rag(r -> r.maxResults(5))}，配置完回到 Conversation。 */
+    public Conversation rag(java.util.function.Consumer<RagSettings> configurer) {
+        requireActive();
+        configurer.accept(rag());
+        return this;
+    }
+
+    /** 请求级记忆设置：{@code .memory().tier(MemoryTier.SHORT_TERM)...}（须全局已装配记忆拦截器）。 */
+    public MemorySettings memory() {
+        requireActive();
+        if (memorySettings == null) {
+            memorySettings = new MemorySettings(this);
+        }
+        return memorySettings;
+    }
+
+    /** consumer 形式：{@code .memory(m -> m.tier(MemoryTier.LONG_TERM))}，配置完回到 Conversation。 */
+    public Conversation memory(java.util.function.Consumer<MemorySettings> configurer) {
+        requireActive();
+        configurer.accept(memory());
+        return this;
+    }
+
+    /** 请求级 RAG 选项（未配置为默认）。 */
+    public com.agent.rag.RagOptions ragOptions() {
+        return ragSettings == null ? com.agent.rag.RagOptions.DEFAULT : ragSettings.toOptions();
+    }
+
+    /** 请求级记忆选项（未配置为默认）。 */
+    public com.agent.memory.MemoryOptions memoryOptions() {
+        return memorySettings == null ? com.agent.memory.MemoryOptions.DEFAULT : memorySettings.toOptions();
+    }
+
     Conversation extraSystem(String instruction) {
         extraSystem.add(instruction);
         return this;
     }
 
-    // ------------------------------------------------------------ 四种终结（互斥）
+    // ------------------------------------------------------------ 终结 API（互斥，write 永远是结尾）
 
-    /** 阻塞聚合为纯字符串。 */
+    /** 阻塞聚合为纯字符串（默认写法）。 */
     public String write() {
+        requireActive();
         markTerminated();
         return agent.blockingResponse(this, false).content();
     }
 
     /** 阻塞，注入 JSON 约束并反序列化为目标类型；失败自动纠偏一次，仍失败抛 {@link JsonOutputException}。 */
-    public <T> T writeJson(Class<T> type) {
+    public <T> T write(Class<T> type) {
+        requireActive();
         markTerminated();
-        String raw = agent.blockingResponse(this, true).content();
+        return blockingJson(type);
+    }
+
+    /** 阻塞，以响应信封格式写文件，返回 {@link AgentFile} 元数据。 */
+    public AgentFile write(AgentFileRef fileRef) {
+        requireActive();
+        markTerminated();
+        return blockingFile(fileRef);
+    }
+
+    /** 进入流式订阅阶段：{@code .stream().subscribe(回调).write()}——
+     * subscribe 声明在 stream 之后、write 之前，write 仍是绝对结尾（阻塞至流消费完毕）。 */
+    public StreamingConversation stream() {
+        requireActive();
+        this.streamMode = true;
+        return new StreamingConversation(this);
+    }
+
+    // ------------------------------------------------------------ 内部复用（供流式句柄与终结方法共享）
+
+    <T> T blockingJson(Class<T> type) {
+        // 注解驱动的字段约束：目标 POJO 的字段必须标注 @AgentJsonFormatFiled（AgentJsonSchema 负责校验）
+        String schema = AgentJsonSchema.schemaInstructionFor(type);
+        Conversation target = schema == null ? this : this.extraSystem(schema);
+        String raw = agent.blockingResponse(target, true).content();
         try {
             return JacksonConfig.mapper().readValue(stripCodeFence(raw), type);
         } catch (Exception first) {
             String hint = "上一次输出不是合法 JSON（" + first.getMessage() + "）。请只输出符合该结构的合法 JSON，"
                     + "不要任何解释、注释或 Markdown 代码块标记。";
-            String retry = agent.blockingResponse(this.extraSystem(hint), true).content();
+            String retry = agent.blockingResponse(target.extraSystem(hint), true).content();
             try {
                 return JacksonConfig.mapper().readValue(stripCodeFence(retry), type);
             } catch (Exception second) {
@@ -145,15 +217,7 @@ public final class Conversation {
         }
     }
 
-    /** 非阻塞，立即返回事件流。 */
-    public Flux<ChatEvent> writeStream() {
-        markTerminated();
-        return agent.executeEvents(this, true);
-    }
-
-    /** 阻塞，以响应信封格式写文件。 */
-    public void writeFile(String path, String fileName) {
-        markTerminated();
+    AgentFile blockingFile(AgentFileRef fileRef) {
         ChatResponse resp = agent.blockingResponse(this, false);
         String ref = agent.resolvedRef(this);
         String provider = ref.contains(":") ? ref.substring(0, ref.indexOf(':')) : ref;
@@ -166,10 +230,14 @@ public final class Conversation {
                 resp.usage(),
                 resp.finishReason(),
                 Instant.now().toString());
-        new ResponseFileWriter().write(path, fileName, envelope);
+        return new ResponseFileWriter().write(fileRef, envelope);
     }
 
     // ------------------------------------------------------------ 内部
+
+    public Agent agent() {
+        return agent;
+    }
 
     public String using() {
         return using;
@@ -221,12 +289,14 @@ public final class Conversation {
 
     private void requireActive() {
         if (terminated) {
-            throw new IllegalStateException("Conversation 已终结：四种输出方式互斥，一条链只能以一种收尾");
+            throw new IllegalStateException("Conversation 已终结：输出方式互斥，一条链只能以一种 write 收尾");
+        }
+        if (streamMode) {
+            throw new IllegalStateException("已进入流式模式（.stream()），请在 .subscribe(...) 之后以 .write() 结尾");
         }
     }
 
-    private void markTerminated() {
-        requireActive();
+    void markTerminated() {
         this.terminated = true;
     }
 

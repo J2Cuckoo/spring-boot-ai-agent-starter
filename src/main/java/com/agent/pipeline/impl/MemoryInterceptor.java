@@ -27,6 +27,9 @@ public class MemoryInterceptor implements Interceptor {
 
     private static final Logger log = LoggerFactory.getLogger(MemoryInterceptor.class);
 
+    /** 请求级记忆选项在 InterceptorContext 中的键。 */
+    public static final String OPTIONS_KEY = "memory.options";
+
     protected final MemoryStore store;
     protected final MemoryConsolidator consolidator;   // 可为 null（无 Redis 时不会装配本拦截器）
 
@@ -47,16 +50,27 @@ public class MemoryInterceptor implements Interceptor {
     }
 
     private ChatRequest injectMemory(ChatRequest in, InterceptorContext ctx) {
-        String ns = ctx.namespace();
+        // 请求级选项：conversation.memory().enabled(false)/tier(...)/namespace(...)
+        com.agent.memory.MemoryOptions options = ctx.attr(OPTIONS_KEY);
+        if (options == null) {
+            options = com.agent.memory.MemoryOptions.DEFAULT;
+        }
+        if (Boolean.FALSE.equals(options.enabled())) {
+            return in;   // 单次调用关闭记忆
+        }
+        String ns = options.namespace() != null && !options.namespace().isBlank()
+                ? options.namespace() : ctx.namespace();
         String conv = ctx.conversationId();
         StringBuilder memory = new StringBuilder();
-        // 查询顺序：热内存 → 临时 → 短期 → 长期，命中即止
-        MemoryTier[] tiers = {MemoryTier.TEMPORARY, MemoryTier.SHORT_TERM, MemoryTier.LONG_TERM};
+        // 查询顺序：热内存 → 临时 → 短期 → 长期，命中即止；tier 选项限定单层
+        MemoryTier[] tiers = options.tier() != null
+                ? new MemoryTier[]{options.tier()}
+                : new MemoryTier[]{MemoryTier.TEMPORARY, MemoryTier.SHORT_TERM, MemoryTier.LONG_TERM};
         String[] labels = {"临时", "短期", "长期"};
         for (int i = 0; i < tiers.length && memory.isEmpty(); i++) {
             String value = loadMemory(ns, conv, tiers[i]);
             if (value != null && !value.isBlank()) {
-                memory.append('[').append(labels[i]).append("] ").append(value).append('\n');
+                memory.append('[').append(labelOf(tiers[i], labels)).append("] ").append(value).append('\n');
             }
         }
         if (memory.isEmpty()) {
@@ -87,7 +101,15 @@ public class MemoryInterceptor implements Interceptor {
                         return;
                     }
                     try {
-                        String ns = ctx.namespace();
+                        com.agent.memory.MemoryOptions options = ctx.attr(OPTIONS_KEY);
+                        if (options == null) {
+                            options = com.agent.memory.MemoryOptions.DEFAULT;
+                        }
+                        if (Boolean.FALSE.equals(options.enabled())) {
+                            return;   // 单次调用关闭记忆：不写入
+                        }
+                        String ns = options.namespace() != null && !options.namespace().isBlank()
+                                ? options.namespace() : ctx.namespace();
                         String conv = ctx.conversationId();
                         String userPrompt = lastUserPrompt(ctx);
                         saveMemory(ns, conv, "Q: " + userPrompt + "\nA: " + content);
@@ -101,6 +123,14 @@ public class MemoryInterceptor implements Interceptor {
                         log.debug("记忆写入失败: {}", e.getMessage());
                     }
                 });
+    }
+
+    private static String labelOf(MemoryTier tier, String[] defaultLabels) {
+        return switch (tier) {
+            case TEMPORARY -> defaultLabels[0];
+            case SHORT_TERM -> defaultLabels[1];
+            case LONG_TERM -> defaultLabels[2];
+        };
     }
 
     /** 读取某层记忆（默认走 MemoryStore，可覆盖以替换读取来源）。 */

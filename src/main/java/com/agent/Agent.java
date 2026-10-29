@@ -88,16 +88,12 @@ public final class Agent implements AutoCloseable {
         return chat(prompt).write();
     }
 
-    public <T> T writeJson(String prompt, Class<T> type) {
-        return chat(prompt).writeJson(type);
+    public <T> T write(String prompt, Class<T> type) {
+        return chat(prompt).write(type);
     }
 
-    public Flux<ChatEvent> writeStream(String prompt) {
-        return chat(prompt).writeStream();
-    }
-
-    public void writeFile(String prompt, String path, String fileName) {
-        chat(prompt).writeFile(path, fileName);
+    public com.agent.output.AgentFile write(String prompt, com.agent.output.AgentFileRef fileRef) {
+        return chat(prompt).write(fileRef);
     }
 
     /** 工作流编排入口。 */
@@ -155,22 +151,32 @@ public final class Agent implements AutoCloseable {
         ModelConfig model = resolveModel(c);
         Provider provider = config.registry().providers().require(model.provider());
         ChatRequest request = c.toRequest(stream, false);
-        return doExecute(provider, model, request);
+        return doExecute(provider, model, request, c);
     }
 
     public ChatResponse blockingResponse(Conversation c, boolean json) {
         ModelConfig model = resolveModel(c);
         Provider provider = config.registry().providers().require(model.provider());
         ChatRequest request = c.toRequest(false, json);
-        List<ChatEvent> events = doExecute(provider, model, request).collectList().block();
+        List<ChatEvent> events = doExecute(provider, model, request, c).collectList().block();
         return aggregate(events);
     }
 
     private Flux<ChatEvent> doExecute(Provider provider, ModelConfig model, ChatRequest request) {
+        return doExecute(provider, model, request, null);
+    }
+
+    private Flux<ChatEvent> doExecute(Provider provider, ModelConfig model, ChatRequest request,
+                                      Conversation conversation) {
         InterceptorContext ctx = new InterceptorContext(model.ref(), model, this);
         String userPrompt = lastUserPrompt(request);
         if (userPrompt != null) {
             ctx.attr("memory.userPrompt", userPrompt);
+        }
+        if (conversation != null) {
+            // 请求级 RAG / 记忆选项：经上下文传递给对应功能拦截器
+            ctx.attr(com.agent.pipeline.impl.RagInterceptor.OPTIONS_KEY, conversation.ragOptions());
+            ctx.attr(com.agent.pipeline.impl.MemoryInterceptor.OPTIONS_KEY, conversation.memoryOptions());
         }
         AbstractModelExecutor executor = executors.computeIfAbsent(provider.type(),
                 t -> ModelExecutorFactory.create(t, http, resilience, toolExecutor));

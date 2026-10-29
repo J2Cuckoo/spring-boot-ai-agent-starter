@@ -13,3 +13,4 @@ target/
 /.vscode/
 /.mvn/maven-settings.xml
 /.mvn/
+/public-key.asc
