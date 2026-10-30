@@ -20,16 +20,6 @@ Java 17 的多模型 Agent 客户端 SDK，以 Spring Boot Starter 形式分发�
 
 ## 1. 引入依赖
 
-### 1.1 构建安装
-
-SDK 尚未发布到中央仓库，先在本工程执行（需要 JDK 17）：
-
-```bash
-mvn clean install
-```
-
-产物 `io.github.j2cuckoo:spring-boot-ai-agent-starter:1.0.4` 会安装到本地仓库（`~/.m2/repository`）。
-
 ### 1.2 Maven 引入
 
 ```xml
