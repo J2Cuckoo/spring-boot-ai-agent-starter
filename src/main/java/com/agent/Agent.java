@@ -25,7 +25,6 @@ import com.agent.rag.RagStore;
 import com.agent.resilience.ResilienceManager;
 import com.agent.tool.ToolExecutor;
 import com.agent.transport.NettyHttpClient;
-import com.agent.workflow.WorkflowBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
@@ -94,11 +93,6 @@ public final class Agent implements AutoCloseable {
 
     public com.agent.output.AgentFile write(String prompt, com.agent.output.AgentFileRef fileRef) {
         return chat(prompt).write(fileRef);
-    }
-
-    /** 工作流编排入口。 */
-    public WorkflowBuilder newWorkflow() {
-        return new WorkflowBuilder(this);
     }
 
     /** 注册工具处理函数（工具闭环自动执行）。 */

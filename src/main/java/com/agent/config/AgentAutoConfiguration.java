@@ -436,6 +436,33 @@ public class AgentAutoConfiguration {
         return new AgentHolder();
     }
 
+    /**
+     * 工作流定义 Bean：prototype 作用域，每个 {@code @Autowired} 注入点获得独立实例，
+     * 各自 start→…→end 定义互不影响：
+     * <pre>{@code
+     * @Autowired private AgentGraph agentGraph;   // 本类专属的空白图
+     *
+     * AgentGraph graph = agentGraph.start("question")
+     *         .modelInference(...)
+     *         .end("answer");
+     * }</pre>
+     */
+    @org.springframework.context.annotation.Bean
+    @org.springframework.context.annotation.Scope("prototype")
+    @ConditionalOnMissingBean(com.agent.workflow.AgentGraph.class)
+    public com.agent.workflow.AgentGraph agentGraph(ObjectProvider<Agent> agents) {
+        // 多 Agent 场景：遵循 Spring 规则——有 @Primary 用主 Bean；多个且无主 Bean 时给出指引
+        Agent agent;
+        try {
+            agent = agents.getObject();
+        } catch (org.springframework.beans.factory.NoUniqueBeanDefinitionException e) {
+            throw new IllegalStateException(
+                    "检测到多个 Agent Bean，无法决定 AgentGraph 绑定哪个：请在其中一个 Agent 上加 @Primary，"
+                            + "或不用 @Autowired 注入，改为手动构造 new AgentGraph(指定的Agent)", e);
+        }
+        return new com.agent.workflow.AgentGraph(agent);
+    }
+
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean(Agent.class)
     public Agent agent(AgentProperties props, ModelRegistry modelRegistry, ResilienceManager resilience,

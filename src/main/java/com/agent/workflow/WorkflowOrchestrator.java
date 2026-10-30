@@ -7,7 +7,7 @@ import reactor.core.publisher.Flux;
  */
 public final class WorkflowOrchestrator {
 
-    /** 执行单个入口步骤（通常为 WorkflowBuilder.build() 产出的组合步骤）。 */
+    /** 执行单个入口步骤（AgentGraph 内部使用）。 */
     public Flux<WorkflowEvent> run(WorkflowStep step, WorkflowContext ctx) {
         WorkflowStateMachine sm = new WorkflowStateMachine();
         ctx.attach(sm);

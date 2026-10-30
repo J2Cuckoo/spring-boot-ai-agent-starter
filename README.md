@@ -22,14 +22,14 @@
 <dependency>
     <groupId>io.github.j2cuckoo</groupId>
     <artifactId>spring-boot-ai-agent-starter</artifactId>
-    <version>2.1.1</version>
+    <version>2.2.0</version>
 </dependency>
 ```
 
 Gradle：
 
 ```groovy
-implementation 'io.github.j2cuckoo:spring-boot-ai-agent-starter:2.0.1'
+implementation 'io.github.j2cuckoo:spring-boot-ai-agent-starter:2.2.0'
 ```
 
 以下依赖随之上自动传递，宿主无需添加：
@@ -50,7 +50,7 @@ implementation 'io.github.j2cuckoo:spring-boot-ai-agent-starter:2.0.1'
 | 能力 | 依赖 | 开关 |
 | --- | --- | --- |
 | 永久记忆 | `spring-boot-starter-data-redis` | `memory.enabled`，默认 true，缺 Redis 自动降级 |
-| 外挂 RAG | `io.milvus:milvus-sdk-java:2.4.1` | `rag.enabled`，默认 false |
+| RAG | `io.milvus:milvus-sdk-java:2.4.1` | `rag.enabled`，默认 false |
 
 ```xml
 <dependency>
@@ -117,6 +117,30 @@ public class ChatController {
 ```
 
 Starter 自动装配 `Agent` Bean，宿主不需要 `@Import` 或手工创建。
+
+### 2.3 整体执行流程
+
+SDK 的所有入口（`chat` 单次调用与 AgentGraph 工作流）都遵循同一条执行管线：
+
+```
+用户输入
+  ↓
+系统解析意图（AgentGraph 用 intent 节点显式化；单次调用由拦截器链隐式处理）
+  ↓
+匹配 / 加载 Skill（SkillManager，内置 calculator/search + 宿主 SPI）
+  ↓
+Skill 初始化（参数、工具、上下文）
+  ↓
+Skill 内部加载提示词模板（skill.md / systemTemplate + variable）
+  ↓
+模板 + 上下文 → 最终 Prompt（拦截器链注入：技能清单、记忆、RAG 召回）
+  ↓
+调用大模型（协议适配 → Netty 传输 → 事件流）
+  ↓
+输出结果（write / write(Class) / write(AgentFileRef) / stream().subscribe(...).write()）
+```
+
+单次调用中 2-4 步由拦截器链隐式完成（SkillInjectInterceptor 注入技能清单、MemoryInterceptor 注入记忆、RagInterceptor 注入召回片段，均可继承重载）；AgentGraph 中可用 `intent` 节点把意图解析与技能匹配显式编排为独立步骤。
 
 ## 3. 输出方式
 
@@ -428,56 +452,67 @@ ragStore.index("doc-1", "要检索的文档内容……");
 
 skill.md 由宿主提供，SDK 不内置。放在 `skills.paths` 配置的文件或目录里，或放到宿主 `resources/skills/*.skill.md` 自动发现。`include-registry` 默认 true，会把已注册技能（含内置 calculator、search）的清单一并注入。
 
-### 4.10 工作流
+### 4.10 工作流定义与执行分离（AgentGraph）
+
+Spring 环境下直接注入使用（prototype Bean，每个注入点获得独立实例，互不影响）：
 
 ```java
-import com.agent.model.ModelRef;
-import com.agent.workflow.Workflow;
-import com.agent.workflow.WorkflowContext;
+@Autowired
+private AgentGraph agentGraph;          // 本类专属的空白图
 
-Workflow wf = agent.newWorkflow()
-        .modelInference("plan",
-                ctx -> "先制定方案",
-                ctx -> (String) ctx.get("plannerModel"),   // 运行时解析模型
-                null)
-        .modelInference("execute",
-                ctx -> "按方案执行：" + ctx.get("output.plan"),
-                ModelRef.of("openai", "strong"),
-                null)
-        .build();
-
-WorkflowContext ctx = new WorkflowContext();
-ctx.put("plannerModel", "openai:fast");
-wf.runBlocking(ctx);
+AgentGraph graph = agentGraph.start("question")
+        .modelInference("answer", ctx -> "回答：" + ctx.get("question"), "openai:fast", "answer")
+        .end("answer");
+String result = graph.execute().input("question", "什么是密封接口").output();
 ```
 
-七种模式：
+多个 Agent Bean 时遵循 Spring 规则：有 `@Primary` 的 Agent 被绑定；多个且无主 Bean 时启动报错并提示——要么给某个 Agent 加 `@Primary`，要么放弃注入改为手动构造 `new AgentGraph(指定的Agent)`（非 Spring 环境同样用此构造）。
+
+定义契约：必须以 `.start(输入键)` 开始、`.end(输出键)` 结尾，中间随意编排；未 start 不能 end、未 end 不能 execute、end 后不能再改定义、执行缺输入抛异常。
 
 ```java
-agent.newWorkflow().sequential(stepA, stepB, stepC);
-agent.newWorkflow().when(ctx -> (int) ctx.get("score") >= 60).then(pass).otherwise(retry);
-agent.newWorkflow().parallel(stepA, stepB, stepC);
-agent.newWorkflow().loop(ctx -> ctx.current("i") < 3, body, 10);
-agent.newWorkflow().awaitHuman("是否发布？").onApprove(publish).onReject(rollback);
-agent.newWorkflow().aiGate().gatekeeper("openai:strong").worker("anthropic:sonnet")
-        .threshold(0.85).maxIterations(5).end();
-agent.newWorkflow().judgeAdversarial().judge("openai:strong").sideA("openai:fast")
-        .sideB("ollama:local").maxIterations(6).end();
+AgentGraph graph = new AgentGraph(agent, "qa")       // 带名构造便于诊断
+        .start("question")
+        .intent("openai:fast", "question")            // 意图解析：从技能清单匹配 Skill
+        .modelInference("answer",
+                ctx -> "回答：" + ctx.get("question"),
+                "openai:fast", "answer")
+        .end("answer");
+
+String result = graph.execute().input("question", "什么是密封接口").output();
+```
+
+可用节点方法：`node`、`modelInference`（静态字符串 / ModelRef / 运行时函数三种模型指定）、`intent`、`skill`、`tool`、`when`、`parallel`、`sequential`、`loop`、`awaitHuman`、`aiGate`、`judgeAdversarial`、`subWorkflow`。`intent(model, 输入键)` 为意图解析节点：用 LLM 从已注册技能清单选出一项，写入 `intent.skill` 与 `intent.args`。
+
+七类模式：
+
+```java
+graph.sequential(stepA, stepB, stepC);
+graph.when(ctx -> (int) ctx.get("score") >= 60, pass, retry);
+graph.parallel(stepA, stepB, stepC);
+graph.loop(ctx -> ctx.current("i") < 3, body, 10);
+graph.awaitHuman("是否发布？", publish, rollback);
+graph.aiGate("openai:strong", "anthropic:sonnet", 0.85, 5);
+graph.judgeAdversarial("openai:strong", "openai:fast", "ollama:local", 6);
+```
+
+嵌套引用另一个工作流，多个工作流状态完全隔离（子图获得全新上下文，只交换声明的一对输入输出）：
+
+```java
+AgentGraph sub = new AgentGraph(agent, "sub")
+        .start("subIn")
+        .modelInference("subOut", ctx -> "处理：" + ctx.get("subIn"), "openai:fast", "subOut")
+        .end("subOut");
+
+AgentGraph main = new AgentGraph(agent, "main")
+        .start("q")
+        .subWorkflow(sub, "q", "subResult")
+        .end("subResult");
+
+Object out = main.execute().input("q", "输入").output();
 ```
 
 工作流内的模型调用走完整 Agent 链路，记忆、RAG、技能拦截器同样生效。详见 [doc/workflow-orchestration.md](./doc/workflow-orchestration.md)。
-
-### 4.11 真人门禁
-
-```yaml
-spring:
-  agent:
-    gate:
-      human-gate: true
-      model: openai:gate-model
-```
-
-开启后，除门禁模型自身外的交互输出先由门禁模型改写成更自然的口吻再返回，默认关闭。开启后流式输出会先聚合再整体返回。
 
 ## 5. 非 Spring 环境
 
@@ -611,7 +646,7 @@ spring:
       model: nomic-embed-text              # RAG 启用时必填，向量模型名
       dimensions: 768                      # 可省，默认 768；向量维度，需与模型一致
 
-    # ---------- 外挂 RAG（默认关闭；需引入 milvus-sdk-java） ----------
+    # ---------- RAG（默认关闭；需引入 milvus-sdk-java） ----------
     rag:
       enabled: false                       # 可省，默认 false；true 才启用 RAG 检索注入
       type: milvus                         # 可省，默认 milvus；向量库类型
@@ -700,3 +735,26 @@ spring:
 | `skills.include-registry` | true | 注入技能清单 |
 | `transport.*` | 见 7.1 | Netty 参数 |
 | `resilience.*` | 见 7.1 | 容错参数 |
+
+## 8. 约定与边界
+
+- 命名沿用 `Agent` 体系，包根 `com.agent`。
+- SDK 不内置 Key 和端点，配置全部来自宿主；所有 Bean 带 `@ConditionalOnMissingBean`，可覆盖。
+- 输出链一律以 `.write` 结尾；默认阻塞，`.stream().subscribe(...).write()` 为流式。
+- 执行流程全局统一（见 2.3）：用户输入 → 意图解析 → 匹配/加载 Skill → Skill 初始化 → 提示词模板 → 模板 + 上下文 → 最终 Prompt → 调用大模型 → 输出；`chat` 单次调用由拦截器链隐式完成，AgentGraph 可用 `intent` 节点显式编排。
+- 线程模型全局统一：网络 IO 全程在 Netty EventLoop（纯非阻塞，SSE 帧零拷贝切分、背压由 request(n) 驱动）；协议 JSON 解析与事件组装、记忆 Redis 读写、RAG 检索、工具执行、模型阻塞等待全部在 SDK 专属 `SdkSchedulers` IO 线程池（与宿主线程池完全隔离，不使用虚拟线程）。三层互不占用：网络线程不会被业务解析占满，业务也不阻塞在网络上。可用系统属性 `agent.io.threads`、`agent.io.queue` 调整。
+- 扩展点：Provider 走 `ProtocolAdapter`，拦截器走 `Interceptor` 或继承内置拦截器，存储走 `MemoryStore`、`RagStore`，向量化走 `EmbeddingModel`，技能走 `Skill`，工具走 `Tool`。
+- 并发设计上没有全局锁（非阻塞 DNS、无锁限流、独立 IO 线程池等），单进程支撑超大连接数仍需水平扩展，细节见 [doc/performance-tuning.md](./doc/performance-tuning.md)。
+
+## 9. 深入阅读
+
+| 文档 | 内容 |
+| --- | --- |
+| [doc/contract-specification.md](./doc/contract-specification.md) | 接口契约、SPI 签名、错误码 |
+| [doc/architecture.md](./doc/architecture.md) | 分层与依赖方向 |
+| [doc/design-revision.md](./doc/design-revision.md) | 架构决策记录 |
+| [doc/module-index.md](./doc/module-index.md) | 模块、包、类索引 |
+| [doc/workflow-orchestration.md](./doc/workflow-orchestration.md) | 工作流七类模式 |
+| [doc/performance-tuning.md](./doc/performance-tuning.md) | 调优与并发治理 |
+| [doc/sdk-packaging-release.md](./doc/sdk-packaging-release.md) | 打包与发布 |
+| [doc/design-patterns.md](./doc/design-patterns.md) | 设计模式与对应类 |

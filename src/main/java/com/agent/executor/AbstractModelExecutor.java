@@ -100,9 +100,14 @@ public abstract class AbstractModelExecutor {
         return Flux.defer(() -> {
             ProtocolAdapter adapter = adapter();
             HttpRequestSpec spec = adapter.buildRequest(p, m, req, stream);
+            // 网络 IO 在 Netty EventLoop；JSON 解析/事件组装切换到 SDK 专属 IO 线程池，
+            // 大响应解析不占用 EventLoop，网络与业务完全解耦
             Flux<ChatEvent> events = stream
                     ? adapter.parse(http.executeStreaming(spec, adapter.frameMode()))
-                    : http.execute(spec).flatMapMany(adapter::parseResponse);
+                        .publishOn(com.agent.util.SdkSchedulers.io())
+                    : http.execute(spec)
+                        .publishOn(com.agent.util.SdkSchedulers.io())
+                        .flatMapMany(adapter::parseResponse);
             return ensureDone(events);
         });
     }

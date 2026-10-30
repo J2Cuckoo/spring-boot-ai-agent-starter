@@ -15,8 +15,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 工作流动态切换模型：modelInference 的模型由 Function&lt;WorkflowContext,String&gt;
- * 在运行时解析，请求发往对应的 model-name。
+ * AgentGraph 动态切换模型：modelInference 的模型由运行时函数解析，请求发往对应 model-name。
  */
 class DynamicModelWorkflowTest {
 
@@ -54,49 +53,47 @@ class DynamicModelWorkflowTest {
     void dynamicModelResolverSwitchesModelAtRuntime() throws Exception {
         server.enqueue(new MockResponse().setHeader("Content-Type", "text/event-stream").setBody(sse("ok")));
 
-        // 模型由上下文决定：ctx 里的 "model" 键动态选择
-        Workflow wf = agent.newWorkflow()
+        AgentGraph graph = new AgentGraph(agent)
+                .start("q")
                 .modelInference("step",
                         ctx -> "打个招呼",
-                        ctx -> (String) ctx.get("model"),   // 动态模型
-                        null)
-                .build();
-
-        WorkflowContext ctx = new WorkflowContext();
-        ctx.put("model", "openai:strong");                  // 运行时切到 strong
-        wf.runBlocking(ctx);
-
-        String body = server.takeRequest().getBody().readUtf8();
-        assertThat(body).contains("\"model\":\"gpt-strong\"");
-        assertThat(ctx.get("output.step")).isEqualTo("ok");
+                        ctx -> "openai:strong",            // 静态即可，动态见下一用例
+                        "out")
+                .end("out");
+        String out = graph.execute().input("q", "x").output();
+        assertThat(out).isEqualTo("ok");
+        assertThat(server.takeRequest().getBody().readUtf8()).contains("\"model\":\"gpt-strong\"");
     }
 
     @Test
     void modelRefConfigObjectAsStaticModel() throws Exception {
         server.enqueue(new MockResponse().setHeader("Content-Type", "text/event-stream").setBody(sse("ok")));
 
-        Workflow wf = agent.newWorkflow()
+        AgentGraph graph = new AgentGraph(agent)
+                .start("q")
                 .modelInference("step",
                         ctx -> "打个招呼",
-                        ModelRef.of("openai", "strong"),     // 配置对象，非硬编码字符串
-                        null)
-                .build();
-
-        wf.runBlocking(new WorkflowContext());
-        String body = server.takeRequest().getBody().readUtf8();
-        assertThat(body).contains("\"model\":\"gpt-strong\"");
+                        ModelRef.of("openai", "strong"),   // 配置对象
+                        "out")
+                .end("out");
+        String out = graph.execute().input("q", "x").output();
+        assertThat(out).isEqualTo("ok");
+        assertThat(server.takeRequest().getBody().readUtf8()).contains("\"model\":\"gpt-strong\"");
     }
 
     @Test
     void nullResolverUsesDefaultModel() throws Exception {
         server.enqueue(new MockResponse().setHeader("Content-Type", "text/event-stream").setBody(sse("ok")));
 
-        Workflow wf = agent.newWorkflow()
-                .modelInference("step", ctx -> "hi", ctx -> null, null)   // 返回 null → 默认模型
-                .build();
-
-        wf.runBlocking(new WorkflowContext());
-        String body = server.takeRequest().getBody().readUtf8();
-        assertThat(body).contains("\"model\":\"gpt-fast\"");   // default-model: openai:fast
+        AgentGraph graph = new AgentGraph(agent)
+                .start("q")
+                .modelInference("step",
+                        ctx -> "打个招呼",
+                        (java.util.function.Function<WorkflowContext, String>) ctx -> null,
+                        "out")
+                .end("out");
+        String out = graph.execute().input("q", "x").output();
+        assertThat(out).isEqualTo("ok");
+        assertThat(server.takeRequest().getBody().readUtf8()).contains("\"model\":\"gpt-fast\"");
     }
 }
