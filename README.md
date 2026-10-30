@@ -536,107 +536,129 @@ try {
 
 ```yaml
 spring:
-  data:                                 # 宿主自己的 Redis 连接，记忆复用
-    redis:
-      host: 127.0.0.1
-      port: 6379
-      password: secret
-      database: 0
-  agent:
-    default-model: openai:my-model      # 必填，或在代码里 .using(...) 指定
+  data:                                    # 宿主自己的 Redis 连接（Spring Boot 标准配置，非 SDK 配置）
+    redis:                                 # 启用记忆（memory.enabled=true）时必须有；未引入 Redis 依赖时整段删除
+      host: 127.0.0.1                      # 必填，Redis 地址
+      port: 6379                           # 可省，默认 6379
+      password: secret                     # 可省，无密码时删除
+      database: 0                          # 可省，默认 0；宿主程序用这个库，SDK 记忆用独立的 spring.agent.memory.database
 
-    providers:                           # 列表结构，每个元素是"provider 名: 配置"的单键映射
-      - openai:
-          type: chat-completions        # chat-completions/responses/anthropic-messages/gemini/ollama，可省略
-          base-url: https://api.openai.com/v1   # 必填
-          api-key: ${OPENAI_API_KEY}
-          timeout: 120s
-          max-retries: 0
-          temperature: 0.7              # provider 级默认，模型可覆盖
-          max-tokens: 4096
-          headers:
-            X-Org: my-org
-          models:                      # 字符串形式：别名等于真实模型名，引用为 openai:gpt-4o-mini
-            - gpt-4o-mini
+  agent:                                   # ===== 以下全部为 SDK 配置 =====
+    default-model: openai:my-model         # 必填（除非每次调用都用 .using(...) 指定）；格式 provider:模型别名
+
+    # ---------- 提供商列表：每个元素是"provider 名: 配置"，至少配一个 ----------
+    providers:
+      - openai:                            # provider 名（自定义，供 default-model 和 .using 引用）
+          type: chat-completions           # 可省，默认 chat-completions；协议格式：chat-completions / responses / anthropic-messages / gemini / ollama，写厂商名（如 deepseek）按 chat-completions 处理并告警
+          base-url: https://api.openai.com/v1   # 必填，API 端点，不带路径
+          api-key: ${OPENAI_API_KEY}       # 必填（ollama 本地模型除外）；建议环境变量注入
+          timeout: 120s                    # 可省，默认 120s，单次请求超时
+          max-retries: 0                   # 可省，默认 0，提供商级重试次数（容错层还有独立的 resilience 重试）
+          temperature: 0.7                 # 可省，该提供商下所有模型的默认温度，模型级可覆盖
+          max-tokens: 4096                 # 可省，该提供商下所有模型的默认最大 token，模型级可覆盖
+          headers:                         # 可省，附加到每个请求的额外请求头
+            X-Org: my-org                  # 示例：请求头名: 值
+          models:                          # 必填（该提供商可用的模型），字符串列表，别名等于厂商真实模型名
+            - gpt-4o-mini                  # 引用方式 openai:gpt-4o-mini
             - gpt-4o
-      - anthropic:
-          type: anthropic-messages
-          base-url: https://api.anthropic.com/v1
-          api-key: ${ANTHROPIC_API_KEY}
+      - anthropic:                         # 第二个提供商，按需增删
+          type: anthropic-messages         # Anthropic Messages 协议
+          base-url: https://api.anthropic.com/v1   # 必填
+          api-key: ${ANTHROPIC_API_KEY}    # 必填
           models:
             - claude-sonnet-4-5
-      - ollama:                         # 本地模型，无 api-key
-          type: ollama
-          base-url: http://localhost:11434
-          models:
-            - llama3:8b
-      - deepseek:                       # 兼容厂商，type 写厂商名亦可
-          type: chat-completions
-          base-url: https://api.deepseek.com
-          api-key: ${DEEPSEEK_API_KEY}
+      - ollama:                            # 本地模型示例
+          type: ollama                     # Ollama 原生 /api/chat 协议（NDJSON 流）
+          base-url: http://localhost:11434 # 必填，本地 Ollama 地址
+          models:                          # 无 api-key；模型别名可含冒号（如 llama3:8b）
+            - llama3:8b                     # 引用方式 ollama:llama3:8b（别名含冒号按第一个冒号分割）
+      - deepseek:                          # 第三方 OpenAI 兼容厂商示例
+          type: chat-completions           # 也可直接写 deepseek，效果相同（会打告警日志）
+          base-url: https://api.deepseek.com   # 必填
+          api-key: ${DEEPSEEK_API_KEY}     # 必填
 
-    memory:                             # 整段可省略
-      enabled: true
-      database: 15                      # 记忆隔离库
-      reverse-optimize: false
+    # ---------- 顶层模型配置（旧结构，可选；与 provider 内嵌 models 并存，用于需要别名≠真实名的场景） ----------
+    models:
+      my-model:                            # 本地别名，引用为 openai:my-model
+        provider: openai                   # 必填，指向 providers 里的名字
+        model-name: gpt-4o-mini            # 必填，厂商真实模型名
+        temperature: 0.5                   # 可省，默认温度，覆盖 provider 级
+        max-tokens: 2048                   # 可省，默认最大 token，覆盖 provider 级
+        stream: true                       # 可省，默认 true，是否以流式请求
+        extra:                             # 可省，厂商特定参数透传
+          top_p: 0.9                        # 示例：原样透传给厂商的参数
+        memory:
+          database: 1                      # 可省，模型级记忆库号，覆盖全局 memory.database
+
+    # ---------- 记忆（整段可省略，全部有默认值；需引入 spring-boot-starter-data-redis） ----------
+    memory:
+      enabled: true                        # 可省，默认 true；false 时即使引入了 Redis 也不启用记忆
+      database: 15                         # 可省，默认 15；SDK 记忆专用 Redis 库号，与宿主程序默认库隔离
+      reverse-optimize: false              # 可省，默认 false；true 时用户输入与记忆冲突以用户为准
       consolidation:
-        min-rounds: 100
+        min-rounds: 100                    # 可省，默认 100；对话轮次达到后触发后台整合浓缩为长期记忆
       cache:
-        ttl: 30m
-        max-size: 20MB                  # 容量单位大写
+        ttl: 30m                           # 可省，默认 30m；热记忆 JVM 内存缓存时效
+        max-size: 20MB                     # 可省，默认 20MB；热记忆上限，超限写回 Redis（容量单位大写）
       temporary:
-        ttl: 3d
+        ttl: 3d                            # 可省，默认 3d；临时记忆 Redis 过期时间
       short-term:
-        ttl: 7d
+        ttl: 7d                            # 可省，默认 7d；短期记忆 Redis 过期时间
 
-    embedding:                          # 启用 RAG 时必配
-      provider: ollama                  # openai 或 ollama
-      model: nomic-embed-text
-      dimensions: 768
+    # ---------- 向量化（启用 RAG 时必配，否则整段可删） ----------
+    embedding:
+      provider: ollama                     # 可省，默认 ollama；向量化提供商：openai 或 ollama
+      model: nomic-embed-text              # RAG 启用时必填，向量模型名
+      dimensions: 768                      # 可省，默认 768；向量维度，需与模型一致
 
-    rag:                                # 默认关闭
-      enabled: false
-      type: milvus
-      top-k: 4
+    # ---------- 外挂 RAG（默认关闭；需引入 milvus-sdk-java） ----------
+    rag:
+      enabled: false                       # 可省，默认 false；true 才启用 RAG 检索注入
+      type: milvus                         # 可省，默认 milvus；向量库类型
+      top-k: 4                             # 可省，默认 4；每次检索召回条数（单次调用可用 .rag().maxResults(n) 覆盖）
       milvus:
-        host: localhost
-        port: 19530
-        collection: agent-memory
-        pool:                           # Milvus 连接池
-          max-size: 4                   # 池中 gRPC 客户端数
-          acquire-timeout-ms: 5000      # 借用超时
+        host: localhost                    # 可省，默认 localhost；Milvus 地址
+        port: 19530                        # 可省，默认 19530；Milvus 端口
+        collection: agent-memory           # 可省，默认 agent-memory；集合名，不存在时自动创建
+        pool:
+          max-size: 4                      # 可省，默认 4；连接池中 gRPC 客户端数量
+          acquire-timeout-ms: 5000         # 可省，默认 5000；借用客户端超时（毫秒）
 
+    # ---------- 真人门禁（去 AI 味，默认关闭） ----------
     gate:
-      human-gate: false                 # 默认关闭
-      model: openai:my-gate             # 开启时必填
+      human-gate: false                    # 可省，默认 false；true 时输出先经门禁模型改写
+      model: openai:my-gate                # human-gate=true 时必填；门禁模型引用
 
+    # ---------- 宿主技能（整段可省略） ----------
     skills:
-      paths:
+      paths:                               # 可省；宿主 skill.md 路径列表，元素为文件或目录（目录扫描 *.skill.md）
         - /opt/my-app/skills
-      include-registry: true
+      include-registry: true               # 可省，默认 true；是否附加注入已注册技能清单（含内置 calculator/search）
 
-    transport:                          # 整段可省略
-      worker-threads: 16                # 默认 CPU*2
-      max-connections-per-endpoint: 64  # 默认 CPU*4
-      max-pending-acquires: 65536
-      acquire-timeout-ms: 10000
-      connect-timeout-ms: 10000
-      request-timeout-ms: 120000
-      idle-timeout-sec: 60
+    # ---------- Netty 传输（整段可省略，一般无需调整） ----------
+    transport:
+      worker-threads: 16                   # 可省，默认 CPU 核数*2；EventLoop 线程数
+      max-connections-per-endpoint: 64     # 可省，默认 CPU 核数*4；单端点连接池上限
+      max-pending-acquires: 65536          # 可省，默认 65536；连接获取排队上限
+      acquire-timeout-ms: 10000            # 可省，默认 10000；从池中获取连接的超时
+      connect-timeout-ms: 10000            # 可省，默认 10000；TCP 建连超时
+      request-timeout-ms: 120000           # 可省，默认 120000；请求总超时
+      idle-timeout-sec: 60                 # 可省，默认 60；连接空闲回收时间
 
-    resilience:                         # 整段可省略
-      enabled: true
-      retry-max-attempts: 3
-      retry-backoff: 100ms
-      request-timeout: 120s
-      heartbeat-max-idle: 30s
-      breaker-enabled: true
-      breaker-window-size: 20
-      breaker-failure-rate-threshold: 50
-      breaker-wait-duration: 10s
-      rate-limit-permits-per-second: 0  # 0 为关闭限流
-      rate-limit-burst: 10
-```
+    # ---------- 容错（整段可省略） ----------
+    resilience:
+      enabled: true                        # 可省，默认 true；容错总开关
+      retry-max-attempts: 3                # 可省，默认 3；可重试错误的最大重试次数
+      retry-backoff: 100ms                 # 可省，默认 100ms；重试初始退避（指数增长加抖动）
+      request-timeout: 120s                # 可省，默认 120s；请求总超时（触发 TIMEOUT 错误码）
+      heartbeat-max-idle: 30s              # 可省，默认 30s；流式事件最大空闲（触发 IDLE_TIMEOUT）
+      breaker-enabled: true                # 可省，默认 true；熔断开关
+      breaker-window-size: 20              # 可省，默认 20；熔断统计窗口请求数
+      breaker-failure-rate-threshold: 50   # 可省，默认 50；窗口内失败率阈值（%），超过则熔断
+      breaker-wait-duration: 10s           # 可省，默认 10s；熔断开启持续时间，过后进入半开探测
+      rate-limit-permits-per-second: 0     # 可省，默认 0（关闭）；每模型每秒允许的请求数
+      rate-limit-burst: 10                 # 可省，默认 10；限流突发容量
+``````
 
 ### 7.2 配置项默认值
 
