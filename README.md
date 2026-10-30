@@ -1,11 +1,8 @@
 # spring-boot-ai-agent-starter
 
 Java 17 的多模型 Agent 客户端 SDK，以 Spring Boot Starter 形式分发。传输层基于 Netty 4.1（连接池、SSE 零拷贝、背压、非阻塞 DNS），上层封装 Reactor 的 `Flux`/`Mono` API。
-
 功能覆盖多提供商多模型、字符串/JSON/文件/流式四种输出、工具调用、技能注入、三层记忆（Redis）、外挂 RAG（Milvus）、工作流编排和容错（熔断、限流、重试、心跳）。宿主通过 `spring.agent.*` 提供配置，SDK 不内置任何 Key 或端点。
-
-宿主引入本依赖即可使用：netty-all、Jackson、Reactor、BouncyCastle（国密 SM3）、SLF4J、spring-boot-autoconfigure 均随依赖自动传递。
-
+目标替代langchain4j和langgraph4j并提高对java应用的支持
 ## 目录
 
 1. [引入依赖](#1-引入依赖)
