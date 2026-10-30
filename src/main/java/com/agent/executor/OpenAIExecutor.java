@@ -16,6 +16,6 @@ public final class OpenAIExecutor extends AbstractModelExecutor {
 
     @Override
     protected ProtocolAdapter adapter() {
-        return ProtocolAdapterFactory.get(ProviderType.OPENAI);
+        return ProtocolAdapterFactory.get(ProviderType.OPENAI_CHAT_COMPLETIONS);
     }
 }

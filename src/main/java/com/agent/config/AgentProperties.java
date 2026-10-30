@@ -4,16 +4,40 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
  * 宿主配置绑定：{@code spring.agent.*}。SDK 不内置任何固定 Key 或端点。
+ *
+ * <p>providers 为列表结构，每个元素是"provider 名到配置"的单键映射，模型内嵌在 provider 下：</p>
+ * <pre>{@code
+ * spring:
+ *   agent:
+ *     providers:
+ *       - deepseek:
+ *           type: chat-completions          # chat-completions / responses / anthropic-messages
+ *           base-url: https://api.deepseek.com/v1
+ *           api-key: ${DEEPSEEK_API_KEY}
+ *           max-tokens: 4096                # provider 级默认，模型可覆盖
+ *           models:
+ *             - deepseek-chat               # 字符串形式：别名等于厂商真实模型名
+ *       - openai:
+ *           type: OPENAI
+ *           base-url: https://api.openai.com/v1
+ *           api-key: ${OPENAI_API_KEY}
+ *           models:
+ *             - name: mini                  # 对象形式：完整模型配置
+ *               model-name: gpt-4o-mini
+ *               temperature: 0.7
+ * }</pre>
  */
 @ConfigurationProperties(prefix = "spring.agent")
 public class AgentProperties {
 
-    /** 默认模型引用 provider:model。 */
+    /** 默认模型引用 provider:别名。 */
     private String defaultModel;
 
     private final Gate gate = new Gate();
@@ -24,7 +48,14 @@ public class AgentProperties {
     private final Transport transport = new Transport();
     private final Resilience resilience = new Resilience();
 
-    private Map<String, ProviderProps> providers = new LinkedHashMap<>();
+    /**
+     * 提供商列表，元素为单键映射（provider 名 -&gt; 配置）。
+     * 绑定为原始 Map 结构，由 AgentAutoConfiguration 解析，以便 models 支持
+     * 字符串与对象两种元素形态。
+     */
+    private List<Map<String, Object>> providers = new ArrayList<>();
+
+    /** 顶层模型配置（可选，与 provider 内嵌 models 并存，provider 名引用）。 */
     private Map<String, ModelProps> models = new LinkedHashMap<>();
 
     public String getDefaultModel() {
@@ -63,11 +94,11 @@ public class AgentProperties {
         return resilience;
     }
 
-    public Map<String, ProviderProps> getProviders() {
+    public List<Map<String, Object>> getProviders() {
         return providers;
     }
 
-    public void setProviders(Map<String, ProviderProps> providers) {
+    public void setProviders(List<Map<String, Object>> providers) {
         this.providers = providers;
     }
 
@@ -326,6 +357,7 @@ public class AgentProperties {
             private String host = "localhost";
             private int port = 19530;
             private String collection = "agent-memory";
+            private final Pool pool = new Pool();
 
             public String getHost() {
                 return host;
@@ -349,6 +381,34 @@ public class AgentProperties {
 
             public void setCollection(String collection) {
                 this.collection = collection;
+            }
+
+            public Pool getPool() {
+                return pool;
+            }
+
+            /** Milvus 客户端连接池。 */
+            public static class Pool {
+                /** 池中客户端（gRPC channel）数量。 */
+                private int maxSize = 4;
+                /** 借用超时，毫秒。 */
+                private int acquireTimeoutMs = 5000;
+
+                public int getMaxSize() {
+                    return maxSize;
+                }
+
+                public void setMaxSize(int maxSize) {
+                    this.maxSize = maxSize;
+                }
+
+                public int getAcquireTimeoutMs() {
+                    return acquireTimeoutMs;
+                }
+
+                public void setAcquireTimeoutMs(int acquireTimeoutMs) {
+                    this.acquireTimeoutMs = acquireTimeoutMs;
+                }
             }
         }
     }
@@ -526,69 +586,7 @@ public class AgentProperties {
         }
     }
 
-    // ---------------------------------------------------------------- providers / models
-
-    public static class ProviderProps {
-        /**
-         * 协议类型：OPENAI / CLAUDE / GEMINI / OLLAMA / CUSTOM（大小写不敏感，可省略）。
-         * 未识别的值（如 deepseek、moonshot 等 OpenAI 兼容厂商名）按 CUSTOM（OpenAI 兼容协议）处理并告警，
-         * 不会导致启动失败。
-         */
-        private String type;
-        private String baseUrl;
-        private String apiKey;
-        private Duration timeout;
-        private int maxRetries;
-        private Map<String, String> headers = new LinkedHashMap<>();
-
-        public String getType() {
-            return type;
-        }
-
-        public void setType(String type) {
-            this.type = type;
-        }
-
-        public String getBaseUrl() {
-            return baseUrl;
-        }
-
-        public void setBaseUrl(String baseUrl) {
-            this.baseUrl = baseUrl;
-        }
-
-        public String getApiKey() {
-            return apiKey;
-        }
-
-        public void setApiKey(String apiKey) {
-            this.apiKey = apiKey;
-        }
-
-        public Duration getTimeout() {
-            return timeout;
-        }
-
-        public void setTimeout(Duration timeout) {
-            this.timeout = timeout;
-        }
-
-        public int getMaxRetries() {
-            return maxRetries;
-        }
-
-        public void setMaxRetries(int maxRetries) {
-            this.maxRetries = maxRetries;
-        }
-
-        public Map<String, String> getHeaders() {
-            return headers;
-        }
-
-        public void setHeaders(Map<String, String> headers) {
-            this.headers = headers;
-        }
-    }
+    // ---------------------------------------------------------------- models（顶层旧结构）
 
     public static class ModelProps {
         private String provider;

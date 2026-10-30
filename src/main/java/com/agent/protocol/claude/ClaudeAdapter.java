@@ -34,7 +34,7 @@ public final class ClaudeAdapter implements ProtocolAdapter {
 
     @Override
     public ProviderType type() {
-        return ProviderType.CLAUDE;
+        return ProviderType.ANTHROPIC_MESSAGES;
     }
 
     @Override

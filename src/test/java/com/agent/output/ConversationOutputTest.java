@@ -32,7 +32,7 @@ class ConversationOutputTest {
         server = new MockWebServer();
         server.start();
         agent = Agent.builder()
-                .registerProvider(Provider.builder("openai", ProviderType.OPENAI)
+                .registerProvider(Provider.builder("openai", ProviderType.OPENAI_CHAT_COMPLETIONS)
                         .baseUrl(server.url("/v1").toString())
                         .apiKey("test-key")
                         .build())

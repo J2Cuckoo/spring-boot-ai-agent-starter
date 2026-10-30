@@ -16,6 +16,6 @@ public final class ClaudeExecutor extends AbstractModelExecutor {
 
     @Override
     protected ProtocolAdapter adapter() {
-        return ProtocolAdapterFactory.get(ProviderType.CLAUDE);
+        return ProtocolAdapterFactory.get(ProviderType.ANTHROPIC_MESSAGES);
     }
 }

@@ -38,7 +38,7 @@ public final class MilvusRagStore implements RagStore, AutoCloseable {
     private static final String TEXT_FIELD = "text";
     private static final String VECTOR_FIELD = "vector";
 
-    private final MilvusServiceClient client;
+    private final MilvusClientPool pool;
     private final EmbeddingModel embedding;
     private final String collection;
     private final AtomicInteger unflushed = new AtomicInteger();
@@ -46,15 +46,21 @@ public final class MilvusRagStore implements RagStore, AutoCloseable {
     public MilvusRagStore(RagConfig config, EmbeddingModel embedding) {
         this.collection = config.collection();
         this.embedding = embedding;
-        this.client = new MilvusServiceClient(ConnectParam.newBuilder()
+        this.pool = new MilvusClientPool(ConnectParam.newBuilder()
                 .withHost(config.host())
                 .withPort(config.port())
-                .build());
-        ensureCollection(embedding.dimensions());
-        log.info("MilvusRagStore 已连接 {}:{} collection={}", config.host(), config.port(), collection);
+                .build(), config.poolMaxSize(), config.poolAcquireTimeoutMs());
+        MilvusServiceClient client = pool.borrow();
+        try {
+            ensureCollection(client, embedding.dimensions());
+        } finally {
+            pool.release(client);
+        }
+        log.info("MilvusRagStore 已连接 {}:{} collection={} 池大小={}",
+                config.host(), config.port(), collection, pool.maxSize());
     }
 
-    private void ensureCollection(int dim) {
+    private void ensureCollection(MilvusServiceClient client, int dim) {
         R<Boolean> has = client.hasCollection(
                 HasCollectionParam.newBuilder().withCollectionName(collection).build());
         if (!Boolean.TRUE.equals(has.getData())) {
@@ -95,6 +101,8 @@ public final class MilvusRagStore implements RagStore, AutoCloseable {
 
     @Override
     public void index(String id, String text) {
+        MilvusServiceClient client = pool.borrow();
+        try {
         client.insert(InsertParam.newBuilder()
                 .withCollectionName(collection)
                 .withFields(List.of(
@@ -105,26 +113,40 @@ public final class MilvusRagStore implements RagStore, AutoCloseable {
         if (unflushed.incrementAndGet() % 32 == 0) {
             flush();
         }
+        } finally {
+            pool.release(client);
+        }
     }
 
     public void flush() {
-        client.flush(FlushParam.newBuilder()
-                .withCollectionNames(List.of(collection))
-                .withSyncFlush(false)
-                .build());
+        MilvusServiceClient client = pool.borrow();
+        try {
+            client.flush(FlushParam.newBuilder()
+                    .withCollectionNames(List.of(collection))
+                    .withSyncFlush(false)
+                    .build());
+        } finally {
+            pool.release(client);
+        }
     }
 
     @Override
     public List<RagHit> search(String query, int topK) {
         List<Float> vector = toFloats(embedding.embed(query));
-        R<SearchResults> resp = client.search(SearchParam.newBuilder()
-                .withCollectionName(collection)
-                .withMetricType(MetricType.COSINE)
-                .withOutFields(List.of(TEXT_FIELD))
-                .withFloatVectors(List.of(vector))
-                .withTopK(Math.max(1, topK))
-                .withParams("{\"nprobe\":16}")
-                .build());
+        MilvusServiceClient client = pool.borrow();
+        R<SearchResults> resp;
+        try {
+            resp = client.search(SearchParam.newBuilder()
+                    .withCollectionName(collection)
+                    .withMetricType(MetricType.COSINE)
+                    .withOutFields(List.of(TEXT_FIELD))
+                    .withFloatVectors(List.of(vector))
+                    .withTopK(Math.max(1, topK))
+                    .withParams("{\"nprobe\":16}")
+                    .build());
+        } finally {
+            pool.release(client);
+        }
         return toHits(resp, topK);
     }
 
@@ -193,10 +215,6 @@ public final class MilvusRagStore implements RagStore, AutoCloseable {
 
     @Override
     public void close() {
-        try {
-            client.close(3);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        pool.close();
     }
 }

@@ -46,6 +46,7 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.stream.Collectors;
 
@@ -102,46 +103,156 @@ public class AgentAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public ProviderRegistry providerRegistry(AgentProperties props) {
+    public ProviderRegistry providerRegistry(AgentProperties props,
+                                             org.springframework.core.env.Environment env) {
         ProviderRegistry registry = new ProviderRegistry();
-        props.getProviders().forEach((name, p) -> {
-            Provider.Builder builder = Provider.builder(name, normalizeProviderType(p.getType(), name))
-                    .baseUrl(p.getBaseUrl())
-                    .apiKey(p.getApiKey());
-            if (p.getTimeout() != null) {
-                builder.timeoutMs(p.getTimeout().toMillis());
+        // 列表结构：每个元素是"provider 名 -> 配置"的单键映射（手动还原，binder 不支持混合列表）
+        for (Map.Entry<String, Map<String, Object>> entry :
+                ProviderConfigReader.readProviders(env).entrySet()) {
+            String name = entry.getKey();
+            Map<String, Object> cfg = entry.getValue();
+            {
+                String type = asString(cfg.get("type"));
+                Provider.Builder builder = Provider.builder(name, normalizeProviderType(type, name))
+                        .baseUrl(asString(cfg.get("base-url")));
+                String apiKey = asString(cfg.get("api-key"));
+                if (apiKey != null) {
+                    builder.apiKey(apiKey);
+                }
+                Object timeout = cfg.get("timeout");
+                if (timeout != null && !timeout.toString().isBlank()) {
+                    try {
+                        builder.timeoutMs(java.time.Duration.parse(
+                                timeout.toString().startsWith("PT") ? timeout.toString()
+                                        : "PT" + normalizeDuration(timeout.toString())).toMillis());
+                    } catch (Exception ignored) {
+                        builder.timeoutMs(Long.parseLong(timeout.toString()));
+                    }
+                }
+                Integer maxRetries = asInt(cfg.get("max-retries"));
+                if (maxRetries != null) {
+                    builder.maxRetries(maxRetries);
+                }
+                if (cfg.get("headers") instanceof Map<?, ?> headers && !headers.isEmpty()) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, String> headerMap = (Map<String, String>) headers;
+                    builder.headers(headerMap);
+                }
+                registry.register(builder.build());
             }
-            builder.maxRetries(p.getMaxRetries());
-            if (p.getHeaders() != null && !p.getHeaders().isEmpty()) {
-                builder.headers(p.getHeaders());
-            }
-            registry.register(builder.build());
-        });
+        }
         return registry;
     }
 
     /**
-     * 归一化提供商类型：大小写不敏感匹配枚举；缺省或未识别的值
-     * （如 deepseek、moonshot 等 OpenAI 兼容厂商名）按 CUSTOM（OpenAI 兼容协议）处理并告警。
+     * 归一化协议格式。支持的写法（大小写不敏感，中划线/下划线等价）：
+     * chat-completions / openai-chat-completions / openai（旧） / custom（旧）→ Chat Completions；
+     * responses / openai-responses → Responses API；
+     * anthropic-messages / claude（旧）→ Anthropic Messages；
+     * gemini、ollama。缺省或未识别值（厂商名如 deepseek）按 Chat Completions 处理并告警。
      */
     static com.agent.model.ProviderType normalizeProviderType(String raw, String providerName) {
         if (raw == null || raw.isBlank()) {
-            return com.agent.model.ProviderType.CUSTOM;
+            return com.agent.model.ProviderType.OPENAI_CHAT_COMPLETIONS;
         }
-        try {
-            return com.agent.model.ProviderType.valueOf(raw.trim().toUpperCase(java.util.Locale.ROOT));
-        } catch (IllegalArgumentException e) {
-            log.warn("provider[{}].type={} 未识别，按 CUSTOM（OpenAI 兼容协议）处理；"
-                    + "可选值：OPENAI/CLAUDE/GEMINI/OLLAMA/CUSTOM", providerName, raw);
-            return com.agent.model.ProviderType.CUSTOM;
+        String key = raw.trim().toLowerCase(java.util.Locale.ROOT)
+                .replace('_', '-').replace(' ', '-');
+        return switch (key) {
+            case "chat-completions", "openai-chat-completions", "openai", "custom", "openai-chat" ->
+                    com.agent.model.ProviderType.OPENAI_CHAT_COMPLETIONS;
+            case "responses", "openai-responses" -> com.agent.model.ProviderType.OPENAI_RESPONSES;
+            case "anthropic-messages", "claude", "anthropic", "messages" ->
+                    com.agent.model.ProviderType.ANTHROPIC_MESSAGES;
+            case "gemini" -> com.agent.model.ProviderType.GEMINI;
+            case "ollama" -> com.agent.model.ProviderType.OLLAMA;
+            default -> {
+                log.warn("provider[{}].type={} 未识别，按 OpenAI Chat Completions 兼容格式处理；"
+                        + "可选值：chat-completions / responses / anthropic-messages / gemini / ollama",
+                        providerName, raw);
+                yield com.agent.model.ProviderType.OPENAI_CHAT_COMPLETIONS;
+            }
+        };
+    }
+
+    private static String asString(Object v) {
+        return v == null ? null : v.toString();
+    }
+
+    /** Spring Duration 简写（10s、3d）转 ISO-8601 后缀。 */
+    private static String normalizeDuration(String raw) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "(\\d+)(ms|s|m|h|d)").matcher(raw.trim());
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            long n = Long.parseLong(m.group(1));
+            String unit = switch (m.group(2)) {
+                case "ms" -> "0." + String.format("%03d", n) + "S";
+                case "s" -> n + "S";
+                case "m" -> n + "M";
+                case "h" -> n + "H";
+                case "d" -> n * 24 + "H";
+                default -> n + "S";
+            };
+            sb.append(unit);
         }
+        return sb.length() > 0 ? sb.toString() : raw;
     }
 
     @Bean
     @ConditionalOnMissingBean
-    public ModelRegistry modelRegistry(AgentProperties props, ProviderRegistry providers) {
+    public ModelRegistry modelRegistry(AgentProperties props, ProviderRegistry providers,
+                                       org.springframework.core.env.Environment env) {
         ModelRegistry registry = new ModelRegistry();
         providers.all().forEach(registry::registerProvider);
+
+        // provider 内嵌 models：字符串（别名=真实名）或对象（完整配置），继承 provider 级默认参数
+        for (Map.Entry<String, Map<String, Object>> entry :
+                ProviderConfigReader.readProviders(env).entrySet()) {
+            String providerName = entry.getKey();
+            {
+                Map<String, Object> cfg = entry.getValue();
+                Double providerTemperature = asDouble(cfg.get("temperature"));
+                Integer providerMaxTokens = asInt(cfg.get("max-tokens"));
+                Object models = cfg.get("models");
+                if (!(models instanceof List<?> modelList)) {
+                    continue;
+                }
+                for (Object item : modelList) {
+                    if (item instanceof String modelName) {
+                        // 字符串形式：别名等于厂商真实模型名
+                        registry.registerModel(ModelConfig.builder(modelName, providerName, modelName)
+                                .temperature(providerTemperature)
+                                .maxTokens(providerMaxTokens)
+                                .build());
+                    } else if (item instanceof Map<?, ?> modelCfgRaw) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> modelCfg = (Map<String, Object>) modelCfgRaw;
+                        String alias = asString(modelCfg.get("name"));
+                        String modelName = asString(modelCfg.get("model-name"));
+                        if (alias == null || modelName == null) {
+                            log.warn("provider[{}] 的模型配置缺少 name 或 model-name，跳过：{}", providerName, modelCfg);
+                            continue;
+                        }
+                        Integer memoryDb = modelCfg.get("memory") instanceof Map<?, ?> mem
+                                ? asInt(((Map<?, ?>) mem).get("database")) : null;
+                        Map<String, Object> extra = modelCfg.get("extra") instanceof Map<?, ?> ex
+                                ? new java.util.LinkedHashMap<>((Map<String, Object>) ex) : Map.of();
+                        Boolean stream = modelCfg.get("stream") instanceof Boolean b ? b : Boolean.TRUE;
+                        registry.registerModel(ModelConfig.builder(alias, providerName, modelName)
+                                .temperature(asDouble(modelCfg.get("temperature")) != null
+                                        ? asDouble(modelCfg.get("temperature")) : providerTemperature)
+                                .maxTokens(asInt(modelCfg.get("max-tokens")) != null
+                                        ? asInt(modelCfg.get("max-tokens")) : providerMaxTokens)
+                                .stream(stream)
+                                .extra(extra)
+                                .memoryDatabase(memoryDb)
+                                .build());
+                    }
+                }
+            }
+        }
+
+        // 顶层 models（旧结构，与内嵌 models 并存）
         props.getModels().forEach((alias, m) -> registry.registerModel(ModelConfig.builder(
                         alias, m.getProvider(), m.getModelName())
                 .temperature(m.getTemperature())
@@ -151,6 +262,34 @@ public class AgentAutoConfiguration {
                 .memoryDatabase(m.getMemory().getDatabase())
                 .build()));
         return registry;
+    }
+
+    private static Double asDouble(Object v) {
+        if (v instanceof Number n) {
+            return n.doubleValue();
+        }
+        if (v instanceof String str && !str.isBlank()) {
+            try {
+                return Double.parseDouble(str.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static Integer asInt(Object v) {
+        if (v instanceof Number n) {
+            return n.intValue();
+        }
+        if (v instanceof String str && !str.isBlank()) {
+            try {
+                return Integer.parseInt(str.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     // ------------------------------------------------------------ 技能
@@ -381,7 +520,16 @@ public class AgentAutoConfiguration {
         @ConditionalOnBean(org.springframework.data.redis.core.StringRedisTemplate.class)
         @ConditionalOnMissingBean(MemoryStore.class)
         public DefaultMemoryStore memoryStore(AgentProperties props,
-                                              org.springframework.data.redis.core.StringRedisTemplate template) {
+                                              org.springframework.data.redis.core.StringRedisTemplate template,
+                                              ObjectProvider<org.springframework.data.redis.connection.RedisConnectionFactory> factories) {
+            org.springframework.data.redis.connection.RedisConnectionFactory factory =
+                    factories.getIfAvailable();
+            if (factory != null) {
+                // 连接池由宿主 spring.data.redis.* 配置（lettuce.pool 或 jedis.pool），
+                // 此处确认实际使用的池实现，方便排查"池没生效"的问题
+                log.info("记忆复用宿主 Redis 连接工厂: {}（池参数在 spring.data.redis.lettuce.pool 或 jedis.pool 配置）",
+                        factory.getClass().getSimpleName());
+            }
             return new DefaultMemoryStore(template, toMemoryConfig(props));
         }
 
@@ -421,7 +569,8 @@ public class AgentAutoConfiguration {
             AgentProperties.Rag.Milvus m = props.getRag().getMilvus();
             return new com.agent.rag.MilvusRagStore(new com.agent.rag.RagConfig(
                     props.getRag().getType(), m.getHost(), m.getPort(), m.getCollection(),
-                    props.getRag().getTopK()), embedding);
+                    props.getRag().getTopK(), m.getPool().getMaxSize(),
+                    m.getPool().getAcquireTimeoutMs()), embedding);
         }
     }
 

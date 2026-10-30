@@ -17,11 +17,11 @@ public final class ModelExecutorFactory {
     public static AbstractModelExecutor create(ProviderType type, NettyHttpClient http,
                                                ResilienceManager resilience, ToolExecutor tools) {
         return switch (type) {
-            case OPENAI -> new OpenAIExecutor(http, resilience, tools);
-            case CLAUDE -> new ClaudeExecutor(http, resilience, tools);
+            case OPENAI_CHAT_COMPLETIONS -> new OpenAIExecutor(http, resilience, tools);
+            case OPENAI_RESPONSES -> new OpenAIResponsesExecutor(http, resilience, tools);
+            case ANTHROPIC_MESSAGES -> new ClaudeExecutor(http, resilience, tools);
             case GEMINI -> new GeminiExecutor(http, resilience, tools);
             case OLLAMA -> new OllamaExecutor(http, resilience, tools);
-            case CUSTOM -> new LocalModelExecutor(http, resilience, tools);
         };
     }
 }

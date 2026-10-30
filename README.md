@@ -1,8 +1,7 @@
 # spring-boot-ai-agent-starter
 
-Java 17 的多模型 Agent 客户端 SDK，以 Spring Boot Starter 形式分发。传输层基于 Netty 4.1（连接池、SSE 零拷贝、背压、非阻塞 DNS），上层封装 Reactor 的 `Flux`/`Mono` API。
-功能覆盖多提供商多模型、字符串/JSON/文件/流式四种输出、工具调用、技能注入、三层记忆（Redis）、外挂 RAG（Milvus）、工作流编排和容错（熔断、限流、重试、心跳）。宿主通过 `spring.agent.*` 提供配置，SDK 不内置任何 Key 或端点。
-目标替代langchain4j和langgraph4j并提高对java应用的支持
+一款面向 Spring Boot 的多模型 Agent Starter，统一封装多厂商大模型能力，提供流式、JSON、文件等多种返回形式，内置工具调用、技能扩展、记忆管理、RAG 检索、工作流编排与容错治理。
+**使用前提**：项目需基于 JDK 17 或 21、Spring Boot 3.x；密钥、服务端点均由业务方外部配置，SDK 不硬编码任何接入信息。
 ## 目录
 
 1. [引入依赖](#1-引入依赖)
@@ -15,20 +14,22 @@ Java 17 的多模型 Agent 客户端 SDK，以 Spring Boot Starter 形式分发�
 
 ## 1. 引入依赖
 
+### 1.1 环境要求
+ JDK 17 及以上（17、21 均可正常使用），Spring Boot 3.x。
 ### 1.2 Maven 引入
 
 ```xml
 <dependency>
     <groupId>io.github.j2cuckoo</groupId>
     <artifactId>spring-boot-ai-agent-starter</artifactId>
-    <version>2.0.1</version>
+    <version>2.1.1</version>
 </dependency>
 ```
 
 Gradle：
 
 ```groovy
-implementation 'io.github.j2cuckoo:spring-boot-ai-agent-starter:1.0.4'
+implementation 'io.github.j2cuckoo:spring-boot-ai-agent-starter:2.0.1'
 ```
 
 以下依赖随之上自动传递，宿主无需添加：
@@ -87,16 +88,14 @@ mvn install:install-file -Dfile=spring-boot-ai-agent-starter-1.0.4.jar \
 ```yaml
 spring:
   agent:
-    default-model: deepseek:chat
+    default-model: deepseek:deepseek-chat
     providers:
-      deepseek:
-        type: CUSTOM      # OPENAI/CLAUDE/GEMINI/OLLAMA/CUSTOM；写厂商名会按 CUSTOM 处理并告警
-        base-url: https://api.deepseek.com
-        api-key: ${DEEPSEEK_API_KEY}
-    models:
-      chat:
-        provider: deepseek
-        model-name: deepseek-chat
+      - deepseek:
+          type: deepseek            # 写厂商名即按 Chat Completions 兼容格式处理并告警
+          base-url: https://api.deepseek.com
+          api-key: ${DEEPSEEK_API_KEY}
+          models:
+            - deepseek-chat         # 字符串形式，别名等于真实模型名
 ```
 
 ### 2.2 最小代码
@@ -201,28 +200,32 @@ agent.chat("讲故事")
 ```yaml
 spring:
   agent:
-    default-model: openai:fast
+    default-model: openai:gpt-4o-mini
     providers:
-      openai:
-        type: OPENAI
-        base-url: https://api.openai.com/v1
-        api-key: ${OPENAI_API_KEY}
-      anthropic:
-        type: CLAUDE
-        base-url: https://api.anthropic.com/v1
-        api-key: ${ANTHROPIC_API_KEY}
-    models:
-      fast:
-        provider: openai
-        model-name: gpt-4o-mini
-      strong:
-        provider: openai
-        model-name: gpt-4o
-      sonnet:
-        provider: anthropic
-        model-name: claude-sonnet-4-5
-        max-tokens: 4096
+      - openai:
+          type: chat-completions
+          base-url: https://api.openai.com/v1
+          api-key: ${OPENAI_API_KEY}
+          models:
+            - gpt-4o-mini
+            - gpt-4o
+      - anthropic:
+          type: anthropic-messages
+          base-url: https://api.anthropic.com/v1
+          api-key: ${ANTHROPIC_API_KEY}
+          models:
+            - claude-sonnet-4-5
+      - deepseek:
+          type: deepseek
+          base-url: https://api.deepseek.com/v1
+          api-key: ${DEEPSEEK_API_KEY}
+          max-tokens: 4096
+          models:
+            - deepseek-v4-flash
+            - deepseek-v4-pro
 ```
+
+`type` 按协议格式填写：`chat-completions`（OpenAI Chat Completions，含各类兼容厂商）、`responses`（OpenAI Responses API）、`anthropic-messages`（Anthropic Messages）、`gemini`、`ollama`。旧值 OPENAI/CLAUDE/CUSTOM 等仍可解析，写厂商名（如 deepseek）按 chat-completions 处理并告警。provider 级的 `temperature`、`max-tokens` 作为其下所有模型的默认值。
 
 ```java
 import com.agent.model.ModelRef;
@@ -419,7 +422,7 @@ spring:
 ragStore.index("doc-1", "要检索的文档内容……");
 ```
 
-检索结果在请求前自动注入上下文。
+检索结果在请求前自动注入上下文。Milvus Java SDK 官方没有连接池，SDK 内置了一个（`rag.milvus.pool.max-size` 个 gRPC 客户端借还使用，`acquire-timeout-ms` 借用超时，故障实例自动替换）。
 
 ### 4.9 技能
 
@@ -542,46 +545,35 @@ spring:
   agent:
     default-model: openai:my-model      # 必填，或在代码里 .using(...) 指定
 
-    providers:
-      openai:
-        type: OPENAI                    # OPENAI/CLAUDE/GEMINI/OLLAMA/CUSTOM，大小写不敏感，可省略
-        base-url: https://api.openai.com/v1   # 必填
-        api-key: ${OPENAI_API_KEY}
-        timeout: 120s
-        max-retries: 0
-        headers:
-          X-Org: my-org
-      anthropic:
-        type: CLAUDE
-        base-url: https://api.anthropic.com/v1
-        api-key: ${ANTHROPIC_API_KEY}
-      ollama:                           # 本地模型，无 api-key
-        type: OLLAMA
-        base-url: http://localhost:11434
-      deepseek:                         # OpenAI 兼容厂商
-        type: CUSTOM
-        base-url: https://api.deepseek.com
-        api-key: ${DEEPSEEK_API_KEY}
-
-    models:
-      my-model:                         # 本地别名，引用为 openai:my-model
-        provider: openai                # 必填
-        model-name: gpt-4o-mini         # 必填，厂商真实模型名
-        temperature: 0.7
-        max-tokens: 4096
-        stream: true
-        extra:                          # 厂商参数透传
-          top_p: 0.9
-        memory:
-          database: 1                   # 模型级记忆库，覆盖全局
-      my-claude:
-        provider: anthropic
-        model-name: claude-sonnet-4-5
-        memory:
-          database: 2
-      my-local:
-        provider: ollama
-        model-name: llama3:8b
+    providers:                           # 列表结构，每个元素是"provider 名: 配置"的单键映射
+      - openai:
+          type: chat-completions        # chat-completions/responses/anthropic-messages/gemini/ollama，可省略
+          base-url: https://api.openai.com/v1   # 必填
+          api-key: ${OPENAI_API_KEY}
+          timeout: 120s
+          max-retries: 0
+          temperature: 0.7              # provider 级默认，模型可覆盖
+          max-tokens: 4096
+          headers:
+            X-Org: my-org
+          models:                      # 字符串形式：别名等于真实模型名，引用为 openai:gpt-4o-mini
+            - gpt-4o-mini
+            - gpt-4o
+      - anthropic:
+          type: anthropic-messages
+          base-url: https://api.anthropic.com/v1
+          api-key: ${ANTHROPIC_API_KEY}
+          models:
+            - claude-sonnet-4-5
+      - ollama:                         # 本地模型，无 api-key
+          type: ollama
+          base-url: http://localhost:11434
+          models:
+            - llama3:8b
+      - deepseek:                       # 兼容厂商，type 写厂商名亦可
+          type: chat-completions
+          base-url: https://api.deepseek.com
+          api-key: ${DEEPSEEK_API_KEY}
 
     memory:                             # 整段可省略
       enabled: true
@@ -610,6 +602,9 @@ spring:
         host: localhost
         port: 19530
         collection: agent-memory
+        pool:                           # Milvus 连接池
+          max-size: 4                   # 池中 gRPC 客户端数
+          acquire-timeout-ms: 5000      # 借用超时
 
     gate:
       human-gate: false                 # 默认关闭
@@ -648,13 +643,13 @@ spring:
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
 | `default-model` | 无，必填 | `provider:别名` |
-| `providers.<name>.type` | CUSTOM | 未识别值按 CUSTOM 处理并告警 |
+| `providers[].<name>.type` | chat-completions | chat-completions / responses / anthropic-messages / gemini / ollama；旧值与厂商名可解析 |
 | `providers.<name>.base-url` | 无，必填 | 端点 |
 | `providers.<name>.api-key` | 空 | OLLAMA 可省 |
 | `providers.<name>.timeout` | 120s | 单次请求超时 |
 | `providers.<name>.max-retries` | 0 | 提供商级重试 |
 | `providers.<name>.headers` | 空 | 额外请求头 |
-| `models.<别名>.provider` | 无，必填 | 指向 providers |
+| `providers[].<name>.models[]` | 空 | 模型名列表，别名等于真实模型名，继承 provider 级默认 |
 | `models.<别名>.model-name` | 无，必填 | 厂商真实名 |
 | `models.<别名>.temperature` | 空 | 默认温度 |
 | `models.<别名>.max-tokens` | 空 | 最大 token |
@@ -676,6 +671,7 @@ spring:
 | `rag.type` | milvus | 向量库类型 |
 | `rag.top-k` | 4 | 召回条数 |
 | `rag.milvus.host/port/collection` | localhost / 19530 / agent-memory | Milvus 连接 |
+| `rag.milvus.pool.max-size/acquire-timeout-ms` | 4 / 5000 | Milvus 连接池 |
 | `gate.human-gate` | false | 门禁开关 |
 | `gate.model` | 无，开启时必填 | 门禁模型 |
 | `skills.paths` | 空 | skill.md 路径 |

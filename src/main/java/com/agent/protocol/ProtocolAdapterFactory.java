@@ -5,6 +5,7 @@ import com.agent.protocol.claude.ClaudeAdapter;
 import com.agent.protocol.gemini.GeminiAdapter;
 import com.agent.protocol.ollama.OllamaAdapter;
 import com.agent.protocol.openai.OpenAIAdapter;
+import com.agent.protocol.openai.OpenAIResponsesAdapter;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,6 +19,7 @@ public final class ProtocolAdapterFactory {
 
     static {
         register(new OpenAIAdapter());
+        register(new OpenAIResponsesAdapter());
         register(new ClaudeAdapter());
         register(new GeminiAdapter());
         register(new OllamaAdapter());

@@ -29,7 +29,7 @@ public final class OpenAIAdapter implements com.agent.protocol.ProtocolAdapter {
 
     @Override
     public ProviderType type() {
-        return ProviderType.OPENAI;
+        return ProviderType.OPENAI_CHAT_COMPLETIONS;
     }
 
     @Override

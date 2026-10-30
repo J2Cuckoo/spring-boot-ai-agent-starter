@@ -27,14 +27,14 @@ public final class Provider {
     }
 
     public static Provider openai(String apiKey) {
-        return builder("openai", ProviderType.OPENAI)
+        return builder("openai", ProviderType.OPENAI_CHAT_COMPLETIONS)
                 .baseUrl("https://api.openai.com/v1")
                 .apiKey(apiKey)
                 .build();
     }
 
     public static Provider claude(String apiKey) {
-        return builder("anthropic", ProviderType.CLAUDE)
+        return builder("anthropic", ProviderType.ANTHROPIC_MESSAGES)
                 .baseUrl("https://api.anthropic.com/v1")
                 .apiKey(apiKey)
                 .build();
@@ -53,7 +53,7 @@ public final class Provider {
 
     /** 自定义（OpenAI 兼容）提供商的 Builder。 */
     public static Builder custom(String name) {
-        return builder(name, ProviderType.CUSTOM);
+        return builder(name, ProviderType.OPENAI_CHAT_COMPLETIONS);
     }
 
     public static Builder builder(String name, ProviderType type) {
@@ -103,7 +103,7 @@ public final class Provider {
                 throw new IllegalArgumentException("provider name 不能为空");
             }
             this.name = name;
-            this.type = type == null ? ProviderType.CUSTOM : type;
+            this.type = type == null ? ProviderType.OPENAI_CHAT_COMPLETIONS : type;
         }
 
         public Builder baseUrl(String baseUrl) {
