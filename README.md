@@ -664,6 +664,8 @@ spring:
       human-gate: false                    # 可省，默认 false；true 时输出先经门禁模型改写
       model: openai:my-gate                # human-gate=true 时必填；门禁模型引用
 
+开启 `human-gate` 后，除门禁模型自身外的交互型输出先由门禁模型改写成更自然的口吻再返回；流式输出会先聚合再整体返回。门禁模型的输出不再二次门禁，避免递归。
+
     # ---------- 宿主技能（整段可省略） ----------
     skills:
       paths:                               # 可省；宿主 skill.md 路径列表，元素为文件或目录（目录扫描 *.skill.md）
