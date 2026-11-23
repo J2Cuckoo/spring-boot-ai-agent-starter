@@ -22,14 +22,14 @@
 <dependency>
     <groupId>io.github.j2cuckoo</groupId>
     <artifactId>spring-boot-ai-agent-starter</artifactId>
-    <version>2.2.0</version>
+    <version>2.3.0</version>
 </dependency>
 ```
 
 Gradle：
 
 ```groovy
-implementation 'io.github.j2cuckoo:spring-boot-ai-agent-starter:2.2.0'
+implementation 'io.github.j2cuckoo:spring-boot-ai-agent-starter:2.3.0'
 ```
 
 以下依赖随之上自动传递，宿主无需添加：
