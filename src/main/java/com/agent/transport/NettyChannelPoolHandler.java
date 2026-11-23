@@ -48,7 +48,9 @@ final class NettyChannelPoolHandler implements ChannelPoolHandler {
         }
         p.addLast(new HttpClientCodec(16384, 32768, 65536, true));
         p.addLast(new HttpContentDecompressor());
-        p.addLast(new IdleStateHandler(0, 0, config.idleTimeoutSec(), TimeUnit.SECONDS));
+        // 读空闲检测：流式响应收到首字节后，相邻数据间隔超时由 StreamBridge 判空闲断流；
+        // 首字节前的 prefill 静默期不触发断流（交给 resilience 层首字节超时）
+        p.addLast(new IdleStateHandler(config.idleTimeoutSec(), 0, 0, TimeUnit.SECONDS));
     }
 
     @Override

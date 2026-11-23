@@ -3,13 +3,19 @@ package com.agent.resilience;
 import java.time.Duration;
 
 /**
- * 容错配置。
+ * 容错配置。超时为三段式：
+ * <ul>
+ *   <li>firstTokenTimeout：首字节超时，覆盖大上下文 prefill 静默期（0 = 关闭）</li>
+ *   <li>interEventIdle：首事件之后相邻事件间的空闲超时（0 = 关闭）</li>
+ *   <li>requestTimeout：整次请求总超时（0 = 关闭，默认关闭；超大 token 场景按需开启）</li>
+ * </ul>
  */
 public final class ResilienceConfig {
 
     private final boolean enabled;
     private final Duration requestTimeout;
-    private final Duration heartbeatMaxIdle;
+    private final Duration firstTokenTimeout;
+    private final Duration interEventIdle;
     private final int retryMaxAttempts;
     private final Duration retryBackoff;
     private final boolean breakerEnabled;
@@ -22,7 +28,8 @@ public final class ResilienceConfig {
     private ResilienceConfig(Builder b) {
         this.enabled = b.enabled;
         this.requestTimeout = b.requestTimeout;
-        this.heartbeatMaxIdle = b.heartbeatMaxIdle;
+        this.firstTokenTimeout = b.firstTokenTimeout;
+        this.interEventIdle = b.interEventIdle;
         this.retryMaxAttempts = b.retryMaxAttempts;
         this.retryBackoff = b.retryBackoff;
         this.breakerEnabled = b.breakerEnabled;
@@ -40,8 +47,9 @@ public final class ResilienceConfig {
     public static Builder builder() {
         return new Builder()
                 .enabled(true)
-                .requestTimeout(Duration.ofSeconds(120))
-                .heartbeatMaxIdle(Duration.ofSeconds(30))
+                .requestTimeout(Duration.ZERO)
+                .firstTokenTimeout(Duration.ofMinutes(10))
+                .interEventIdle(Duration.ofMinutes(2))
                 .retryMaxAttempts(3)
                 .retryBackoff(Duration.ofMillis(100))
                 .breakerEnabled(true)
@@ -60,8 +68,12 @@ public final class ResilienceConfig {
         return requestTimeout;
     }
 
-    public Duration heartbeatMaxIdle() {
-        return heartbeatMaxIdle;
+    public Duration firstTokenTimeout() {
+        return firstTokenTimeout;
+    }
+
+    public Duration interEventIdle() {
+        return interEventIdle;
     }
 
     public int retryMaxAttempts() {
@@ -100,7 +112,8 @@ public final class ResilienceConfig {
 
         private boolean enabled;
         private Duration requestTimeout;
-        private Duration heartbeatMaxIdle;
+        private Duration firstTokenTimeout;
+        private Duration interEventIdle;
         private int retryMaxAttempts;
         private Duration retryBackoff;
         private boolean breakerEnabled;
@@ -120,9 +133,22 @@ public final class ResilienceConfig {
             return this;
         }
 
-        public Builder heartbeatMaxIdle(Duration v) {
-            this.heartbeatMaxIdle = v;
+        public Builder firstTokenTimeout(Duration v) {
+            this.firstTokenTimeout = v;
             return this;
+        }
+
+        public Builder interEventIdle(Duration v) {
+            this.interEventIdle = v;
+            return this;
+        }
+
+        /**
+         * @deprecated 由 interEventIdle 取代；保留旧入口转发，源码兼容。
+         */
+        @Deprecated
+        public Builder heartbeatMaxIdle(Duration v) {
+            return interEventIdle(v);
         }
 
         public Builder retryMaxAttempts(int v) {

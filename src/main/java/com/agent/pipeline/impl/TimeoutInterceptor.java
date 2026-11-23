@@ -10,7 +10,8 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
- * 超时拦截器：委托 resilience 层 UserTimeoutGuard；内核关闭时兜底在链上应用总超时。
+ * 超时拦截器：委托 resilience 层；内核关闭时兜底在链上应用总超时
+ * （首字节/事件间保活只随内核生效，内核关闭即视为用户显式放弃超时保护）。
  */
 public final class TimeoutInterceptor implements Interceptor {
 

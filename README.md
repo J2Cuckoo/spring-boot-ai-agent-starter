@@ -127,7 +127,7 @@ SDK 的所有入口（`chat` 单次调用与 AgentGraph 工作流）都遵循同
   ↓
 系统解析意图（AgentGraph 用 intent 节点显式化；单次调用由拦截器链隐式处理）
   ↓
-匹配 / 加载 Skill（SkillManager，内置 calculator/search + 宿主 SPI）
+匹配 / 加载 Skill（SkillManager，宿主 @Bean 或 SPI 注册）
   ↓
 Skill 初始化（参数、工具、上下文）
   ↓
@@ -450,7 +450,7 @@ ragStore.index("doc-1", "要检索的文档内容……");
 
 ### 4.9 技能
 
-skill.md 由宿主提供，SDK 不内置。放在 `skills.paths` 配置的文件或目录里，或放到宿主 `resources/skills/*.skill.md` 自动发现。`include-registry` 默认 true，会把已注册技能（含内置 calculator、search）的清单一并注入。
+skill.md 由宿主提供，SDK 不内置。放在 `skills.paths` 配置的文件或目录里，或放到宿主 `resources/skills/*.skill.md` 自动发现。`include-registry` 默认 true，会把已注册技能（宿主 @Bean 或 SPI 注册）的清单一并注入。
 
 ### 4.10 工作流定义与执行分离（AgentGraph）
 
@@ -578,8 +578,8 @@ spring:
       password: secret                     # 可省，无密码时删除
       database: 0                          # 可省，默认 0；宿主程序用这个库，SDK 记忆用独立的 spring.agent.memory.database
 
-  agent:                                   # ===== 以下全部为 SDK 配置 =====
-    default-model: openai:my-model         # 必填（除非每次调用都用 .using(...) 指定）；格式 provider:模型别名
+  agent:                                   # ===== 以下全部为 SDK 配置；整段不配也能正常启动，调用时才校验 =====
+    default-model: openai:my-model         # 调用未用 .using(...) 指定时需要；格式 provider:模型别名
 
     # ---------- 提供商列表：每个元素是"provider 名: 配置"，至少配一个 ----------
     providers:
@@ -670,25 +670,26 @@ spring:
     skills:
       paths:                               # 可省；宿主 skill.md 路径列表，元素为文件或目录（目录扫描 *.skill.md）
         - /opt/my-app/skills
-      include-registry: true               # 可省，默认 true；是否附加注入已注册技能清单（含内置 calculator/search）
+      include-registry: true               # 可省，默认 true；是否附加注入已注册技能清单（宿主 @Bean/SPI 注册）
 
     # ---------- Netty 传输（整段可省略，一般无需调整） ----------
     transport:
       worker-threads: 16                   # 可省，默认 CPU 核数*2；EventLoop 线程数
-      max-connections-per-endpoint: 64     # 可省，默认 CPU 核数*4；单端点连接池上限
+      max-connections-per-endpoint: 64     # 可省，默认 max(32, CPU 核数*8)；单端点连接池上限
       max-pending-acquires: 65536          # 可省，默认 65536；连接获取排队上限
-      acquire-timeout-ms: 10000            # 可省，默认 10000；从池中获取连接的超时
+      acquire-timeout-ms: 30000            # 可省，默认 30000；从池中获取连接的超时
       connect-timeout-ms: 10000            # 可省，默认 10000；TCP 建连超时
-      request-timeout-ms: 120000           # 可省，默认 120000；请求总超时
-      idle-timeout-sec: 60                 # 可省，默认 60；连接空闲回收时间
+      request-timeout-ms: 600000           # 可省，默认 600000；非流式首响应超时（0 = 关闭）
+      idle-timeout-sec: 120                # 可省，默认 120；流式读空闲检测（收到首字节后生效）
 
     # ---------- 容错（整段可省略） ----------
     resilience:
       enabled: true                        # 可省，默认 true；容错总开关
       retry-max-attempts: 3                # 可省，默认 3；可重试错误的最大重试次数
       retry-backoff: 100ms                 # 可省，默认 100ms；重试初始退避（指数增长加抖动）
-      request-timeout: 120s                # 可省，默认 120s；请求总超时（触发 TIMEOUT 错误码）
-      heartbeat-max-idle: 30s              # 可省，默认 30s；流式事件最大空闲（触发 IDLE_TIMEOUT）
+      first-token-timeout: 10m             # 可省，默认 10m；首字节超时，覆盖大上下文 prefill 静默期（0 = 关闭）
+      inter-event-idle: 2m                 # 可省，默认 2m；首事件后相邻事件间的空闲超时（触发 IDLE_TIMEOUT；0 = 关闭）
+      request-timeout: 0s                  # 可省，默认 0（关闭）；整次请求总超时（触发 TIMEOUT），超大 token 场景按需开启
       breaker-enabled: true                # 可省，默认 true；熔断开关
       breaker-window-size: 20              # 可省，默认 20；熔断统计窗口请求数
       breaker-failure-rate-threshold: 50   # 可省，默认 50；窗口内失败率阈值（%），超过则熔断
@@ -701,7 +702,7 @@ spring:
 
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
-| `default-model` | 无，必填 | `provider:别名` |
+| `default-model` | 无 | `provider:别名`；未配置时启动正常，调用时报错并提示配置 |
 | `providers[].<name>.type` | chat-completions | chat-completions / responses / anthropic-messages / gemini / ollama；旧值与厂商名可解析 |
 | `providers.<name>.base-url` | 无，必填 | 端点 |
 | `providers.<name>.api-key` | 空 | OLLAMA 可省 |

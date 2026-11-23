@@ -22,8 +22,6 @@ public final class DefaultSkillManager implements SkillManager {
 
     public DefaultSkillManager(SkillRegistry registry) {
         this.registry = registry;
-        this.registry.register(new CalculatorSkill());
-        this.registry.register(new SearchSkill());
         this.registry.loadAll();
     }
 

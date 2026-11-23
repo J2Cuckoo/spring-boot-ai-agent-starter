@@ -7,6 +7,7 @@ public final class ErrorCodes {
 
     public static final String CIRCUIT_OPEN = "CIRCUIT_OPEN";
     public static final String RATE_LIMITED = "RATE_LIMITED";
+    public static final String FIRST_TOKEN_TIMEOUT = "FIRST_TOKEN_TIMEOUT";
     public static final String IDLE_TIMEOUT = "IDLE_TIMEOUT";
     public static final String TIMEOUT = "TIMEOUT";
     public static final String BAD_REQUEST = "BAD_REQUEST";

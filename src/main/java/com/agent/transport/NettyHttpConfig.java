@@ -2,6 +2,7 @@ package com.agent.transport;
 
 /**
  * Netty 传输配置：线程数、连接池、各类超时。默认值见 performance-tuning.md。
+ * requestTimeoutMs 是非流式首响应超时（0 = 关闭）；idleTimeoutSec 是流式读空闲检测。
  */
 public final class NettyHttpConfig {
 
@@ -31,12 +32,12 @@ public final class NettyHttpConfig {
         int cores = Runtime.getRuntime().availableProcessors();
         return new Builder()
                 .workerThreads(Math.max(2, cores * 2))
-                .maxConnectionsPerEndpoint(cores * 4)
+                .maxConnectionsPerEndpoint(Math.max(32, cores * 8))
                 .maxPendingAcquires(65536)
-                .acquireTimeoutMs(10_000)
+                .acquireTimeoutMs(30_000)
                 .connectTimeoutMs(10_000)
-                .requestTimeoutMs(120_000)
-                .idleTimeoutSec(60);
+                .requestTimeoutMs(600_000)
+                .idleTimeoutSec(120);
     }
 
     public int workerThreads() {

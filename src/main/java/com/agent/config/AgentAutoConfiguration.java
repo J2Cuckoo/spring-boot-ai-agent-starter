@@ -89,7 +89,8 @@ public class AgentAutoConfiguration {
                 .retryMaxAttempts(r.getRetryMaxAttempts())
                 .retryBackoff(r.getRetryBackoff())
                 .requestTimeout(r.getRequestTimeout())
-                .heartbeatMaxIdle(r.getHeartbeatMaxIdle())
+                .firstTokenTimeout(r.getFirstTokenTimeout())
+                .interEventIdle(r.getInterEventIdle())
                 .breakerEnabled(r.isBreakerEnabled())
                 .breakerWindowSize(r.getBreakerWindowSize())
                 .breakerFailureRateThreshold(r.getBreakerFailureRateThreshold())
@@ -308,7 +309,7 @@ public class AgentAutoConfiguration {
         docs.addAll(loadHostSkillPaths(props.getSkills().getPaths()));
         // 2) 宿主 classpath 的 skills/*.skill.md（SDK 不内置任何 skill.md）
         docs.addAll(loadClasspathSkillDocs());
-        // 3) 已注册技能（含内置 calculator/search 与宿主 SPI 注册）的清单
+        // 3) 已注册技能（宿主 @Bean 或 SPI 注册）的清单
         if (props.getSkills().isIncludeRegistry()) {
             String registry = skillManager.all().stream()
                     .map(s -> "## " + s.name() + "（" + s.id() + "）\n" + s.description())

@@ -8,7 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * 容错管理器：按模型维度组合熔断 + 重试 + 总超时 + 心跳。
+ * 容错管理器：按模型维度组合熔断 + 重试 + 总超时 + 首字节/事件间保活。
  * 策略对象（RetryPolicy/UserTimeoutGuard/HeartbeatKeepAlive）在构造期构建一次，
  * guard() 调用零额外分配；pipeline 的 RateLimit/Retry/Timeout 拦截器即本内核在拦截链上的装配形态。
  */
@@ -29,7 +29,7 @@ public final class ResilienceManager {
         this.config = config;
         this.retryPolicy = new RetryPolicy(config.retryMaxAttempts(), config.retryBackoff());
         this.timeoutGuard = new UserTimeoutGuard(config.requestTimeout());
-        this.heartbeat = new HeartbeatKeepAlive(config.heartbeatMaxIdle());
+        this.heartbeat = new HeartbeatKeepAlive(config.firstTokenTimeout(), config.interEventIdle());
     }
 
     public ResilienceConfig config() {

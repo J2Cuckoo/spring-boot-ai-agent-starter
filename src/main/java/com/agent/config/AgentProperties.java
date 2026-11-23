@@ -145,7 +145,7 @@ public class AgentProperties {
          * 宿主 skill.md 路径列表，元素可为文件或目录（目录下扫描 *.skill.md）。
          */
         private java.util.List<String> paths = new java.util.ArrayList<>();
-        /** 是否把已注册技能（含内置 calculator/search 与宿主 SPI 注册）的清单注入上下文。 */
+        /** 是否把已注册技能（宿主 @Bean 或 SPI 注册）的清单注入上下文。 */
         private boolean includeRegistry = true;
 
         public java.util.List<String> getPaths() {
@@ -417,12 +417,14 @@ public class AgentProperties {
 
     public static class Transport {
         private int workerThreads = Math.max(2, Runtime.getRuntime().availableProcessors() * 2);
-        private int maxConnectionsPerEndpoint = Runtime.getRuntime().availableProcessors() * 4;
+        private int maxConnectionsPerEndpoint = Math.max(32, Runtime.getRuntime().availableProcessors() * 8);
         private int maxPendingAcquires = 65536;
-        private int acquireTimeoutMs = 10_000;
+        private int acquireTimeoutMs = 30_000;
         private int connectTimeoutMs = 10_000;
-        private int requestTimeoutMs = 120_000;
-        private int idleTimeoutSec = 60;
+        /** 非流式首响应超时（发出请求到收到响应头的上限），0 = 关闭。 */
+        private int requestTimeoutMs = 600_000;
+        /** 连接读空闲检测：流式响应在收到首字节后，相邻数据间隔超过该值判空闲断流。 */
+        private int idleTimeoutSec = 120;
 
         public int getWorkerThreads() {
             return workerThreads;
@@ -487,8 +489,12 @@ public class AgentProperties {
         private boolean enabled = true;
         private int retryMaxAttempts = 3;
         private Duration retryBackoff = Duration.ofMillis(100);
-        private Duration requestTimeout = Duration.ofSeconds(120);
-        private Duration heartbeatMaxIdle = Duration.ofSeconds(30);
+        /** 总超时（订阅起算的墙钟时长），0 = 关闭。 */
+        private Duration requestTimeout = Duration.ZERO;
+        /** 首字节超时：首个事件到来前的等待上限，覆盖大上下文 prefill 静默期，0 = 关闭。 */
+        private Duration firstTokenTimeout = Duration.ofMinutes(10);
+        /** 事件间空闲超时：首个事件之后相邻事件的间隔上限，0 = 关闭。 */
+        private Duration interEventIdle = Duration.ofMinutes(2);
         private boolean breakerEnabled = true;
         private int breakerWindowSize = 20;
         private double breakerFailureRateThreshold = 50;
@@ -529,12 +535,36 @@ public class AgentProperties {
             this.requestTimeout = v;
         }
 
-        public Duration getHeartbeatMaxIdle() {
-            return heartbeatMaxIdle;
+        public Duration getFirstTokenTimeout() {
+            return firstTokenTimeout;
         }
 
+        public void setFirstTokenTimeout(Duration v) {
+            this.firstTokenTimeout = v;
+        }
+
+        public Duration getInterEventIdle() {
+            return interEventIdle;
+        }
+
+        public void setInterEventIdle(Duration v) {
+            this.interEventIdle = v;
+        }
+
+        /**
+         * @deprecated 由 inter-event-idle 取代；yml 里配置 heartbeat-max-idle 仍会被绑定并转发。
+         */
+        @Deprecated
+        public Duration getHeartbeatMaxIdle() {
+            return interEventIdle;
+        }
+
+        /**
+         * @deprecated 由 inter-event-idle 取代。
+         */
+        @Deprecated
         public void setHeartbeatMaxIdle(Duration v) {
-            this.heartbeatMaxIdle = v;
+            this.interEventIdle = v;
         }
 
         public boolean isBreakerEnabled() {

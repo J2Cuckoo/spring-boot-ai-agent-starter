@@ -113,4 +113,79 @@ class ChatEventParserTest {
                 "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"。\"}]},\"finishReason\":\"STOP\"}]}"));
         assertThat(((ChatEvent.DoneEvent) finish.get(1)).finishReason()).isEqualTo("STOP");
     }
+
+    // ---------------------------------------------------------------- Responses API
+
+    @Test
+    void openaiResponsesFullLifecycle() {
+        com.agent.protocol.openai.OpenAIResponsesEventParser parser =
+                new com.agent.protocol.openai.OpenAIResponsesEventParser();
+
+        // response.created / in_progress 等生命周期事件忽略
+        assertThat(parser.parse(frame("response.created", "{\"type\":\"response.created\"}"))).isEmpty();
+        assertThat(parser.parse(frame("response.in_progress", "{\"type\":\"response.in_progress\"}"))).isEmpty();
+
+        // 增量文本
+        List<ChatEvent> delta = parser.parse(frame("response.output_text.delta",
+                "{\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}"));
+        assertThat(delta).hasSize(1);
+        assertThat(((ChatEvent.TokenEvent) delta.get(0)).delta()).isEqualTo("你好");
+
+        // completed：usage + done 一次给齐，done() 不再补发
+        List<ChatEvent> completed = parser.parse(frame("response.completed",
+                "{\"type\":\"response.completed\",\"response\":{\"usage\":"
+                        + "{\"input_tokens\":7,\"output_tokens\":8,\"total_tokens\":15}}}"));
+        assertThat(completed).hasSize(2);
+        assertThat(((ChatEvent.UsageEvent) completed.get(0)).totalTokens()).isEqualTo(15);
+        assertThat(((ChatEvent.DoneEvent) completed.get(1)).finishReason()).isEqualTo("stop");
+        assertThat(parser.done()).isEmpty();
+    }
+
+    @Test
+    void openaiResponsesDoneFallbackWithoutCompleted() {
+        com.agent.protocol.openai.OpenAIResponsesEventParser parser =
+                new com.agent.protocol.openai.OpenAIResponsesEventParser();
+        parser.parse(frame("response.output_text.delta", "{\"delta\":\"x\"}"));
+        List<ChatEvent> done = parser.done();
+        assertThat(done).hasSize(1);
+        assertThat(((ChatEvent.DoneEvent) done.get(0)).finishReason()).isEqualTo("stop");
+    }
+
+    @Test
+    void openaiResponsesFailedAndErrorEvents() {
+        com.agent.protocol.openai.OpenAIResponsesEventParser parser =
+                new com.agent.protocol.openai.OpenAIResponsesEventParser();
+        List<ChatEvent> failed = parser.parse(frame("response.failed",
+                "{\"response\":{\"error\":{\"message\":\"上下文超限\"}}}"));
+        assertThat(((ChatEvent.ErrorEvent) failed.get(0)).code()).isEqualTo("MODEL_ERROR");
+
+        List<ChatEvent> error = parser.parse(frame("error", "{\"message\":\"限流\"}"));
+        assertThat(((ChatEvent.ErrorEvent) error.get(0)).message()).isEqualTo("限流");
+    }
+
+    // ---------------------------------------------------------------- 坏帧容错
+
+    @Test
+    void malformedJsonFrameBecomesErrorEventNotThrow() {
+        // 传输层按 SSE 帧切分，坏 JSON（截断/非 JSON）不应炸掉解析器，转为 ErrorEvent
+        OpenAIChatEventParser chatParser = new OpenAIChatEventParser();
+        List<ChatEvent> bad = chatParser.parse(frame(null, "{\"choices\":[{\"delta\":{\"con"));
+        assertThat(bad).hasSize(1);
+        assertThat(((ChatEvent.ErrorEvent) bad.get(0)).code()).isEqualTo("MODEL_ERROR");
+
+        com.agent.protocol.openai.OpenAIResponsesEventParser responsesParser =
+                new com.agent.protocol.openai.OpenAIResponsesEventParser();
+        List<ChatEvent> badResponses = responsesParser.parse(frame("response.output_text.delta", "{broken"));
+        assertThat(badResponses).hasSize(1);
+        assertThat(((ChatEvent.ErrorEvent) badResponses.get(0)).code()).isEqualTo("MODEL_ERROR");
+    }
+
+    @Test
+    void openaiErrorFrameInStream() {
+        OpenAIChatEventParser parser = new OpenAIChatEventParser();
+        List<ChatEvent> events = parser.parse(frame(null,
+                "{\"error\":{\"message\":\"配额不足\",\"type\":\"insufficient_quota\"}}"));
+        assertThat(events).hasSize(1);
+        assertThat(((ChatEvent.ErrorEvent) events.get(0)).message()).isEqualTo("配额不足");
+    }
 }

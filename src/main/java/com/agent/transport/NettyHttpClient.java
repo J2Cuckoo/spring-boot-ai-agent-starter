@@ -51,6 +51,8 @@ import java.util.concurrent.ConcurrentMap;
 /**
  * 自研 Netty HTTP 客户端：按端点分组 FixedChannelPool，非流式聚合响应，
  * 流式按 SSE/NDJSON 帧下发并做背压（autoRead=false，request(n) 驱动 read()）。
+ * 超时门控：非流式首响应超时（requestTimeoutMs，0=关闭）；
+ * 流式首字节前不判空闲（prefill 静默交 resilience 层），首字节后读空闲超 idleTimeoutSec 断流。
  */
 public final class NettyHttpClient implements AutoCloseable {
 
@@ -254,6 +256,8 @@ public final class NettyHttpClient implements AutoCloseable {
         private CompositeByteBuf body;
         private boolean done;
         private ChannelHandlerContext ctx;
+        /** 首响应超时定时器：发出请求后 requestTimeoutMs 内未收到响应头即报 FIRST_TOKEN_TIMEOUT。 */
+        private io.netty.util.concurrent.ScheduledFuture<?> firstResponseTimer;
 
         BlockingBridge(MonoSink<HttpResponse> sink, ChannelPool pool) {
             this.sink = sink;
@@ -263,12 +267,27 @@ public final class NettyHttpClient implements AutoCloseable {
         @Override
         public void handlerAdded(ChannelHandlerContext ctx) {
             this.ctx = ctx;
+            long ms = config.requestTimeoutMs();
+            if (ms > 0) {
+                firstResponseTimer = ctx.channel().eventLoop().schedule(
+                        () -> fail(ctx, new AgentException(ErrorCodes.FIRST_TOKEN_TIMEOUT,
+                                "非流式首响应超时（" + ms + "ms）", true)),
+                        ms, java.util.concurrent.TimeUnit.MILLISECONDS);
+            }
+        }
+
+        private void cancelFirstResponseTimer() {
+            if (firstResponseTimer != null) {
+                firstResponseTimer.cancel(false);
+                firstResponseTimer = null;
+            }
         }
 
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
             try {
                 if (msg instanceof io.netty.handler.codec.http.HttpResponse r) {
+                    cancelFirstResponseTimer();
                     headers = r;
                     body = ctx.alloc().compositeBuffer();
                 } else if (msg instanceof HttpContent c) {
@@ -293,6 +312,7 @@ public final class NettyHttpClient implements AutoCloseable {
                 return;
             }
             done = true;
+            cancelFirstResponseTimer();
             byte[] bytes = new byte[body.readableBytes()];
             body.readBytes(bytes);
             body.release();
@@ -316,6 +336,7 @@ public final class NettyHttpClient implements AutoCloseable {
                 return;
             }
             done = true;
+            cancelFirstResponseTimer();
             if (body != null && body.refCnt() > 0) {
                 body.release();
             }
@@ -328,6 +349,7 @@ public final class NettyHttpClient implements AutoCloseable {
             if (done) {
                 return;
             }
+            cancelFirstResponseTimer();
             if (ctx != null) {
                 fail(ctx, cause);
             } else {
@@ -363,6 +385,8 @@ public final class NettyHttpClient implements AutoCloseable {
         private boolean errorMode;
         private boolean finished;
         private boolean written;
+        /** 是否已收到响应头：首字节前的 prefill 静默期不判空闲断流（交给 resilience 层首字节超时）。 */
+        private boolean responseStarted;
         private final StringBuilder errBody = new StringBuilder();
 
         StreamBridge(FluxSink<SseFrame> sink, ChannelPool pool, SseFrameDecoder decoder, FrameMode mode) {
@@ -415,6 +439,7 @@ public final class NettyHttpClient implements AutoCloseable {
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
             if (msg instanceof io.netty.handler.codec.http.HttpResponse r) {
                 headers = r;
+                responseStarted = true;
                 if (r.status().code() >= 400) {
                     errorMode = true;
                 }
@@ -458,6 +483,11 @@ public final class NettyHttpClient implements AutoCloseable {
                 return;
             }
             if (evt instanceof IdleStateEvent) {
+                // 首字节前的静默是 prefill 的正常形态（超大上下文可达数分钟），
+                // 不判空闲断流；收到响应后读空闲超过 idleTimeoutSec 才判断流
+                if (!responseStarted) {
+                    return;
+                }
                 fail(ctx, new AgentException(ErrorCodes.IDLE_TIMEOUT,
                         "流式读取空闲超时（" + config.idleTimeoutSec() + "s）", true));
                 return;
