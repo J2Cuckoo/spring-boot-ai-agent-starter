@@ -19,14 +19,14 @@ final class DemandCounter {
         return demand.get() > 0;
     }
 
-    boolean consume() {
+    void consume() {
         for (; ; ) {
             long v = demand.get();
             if (v <= 0) {
-                return false;
+                return;
             }
             if (demand.compareAndSet(v, v - 1)) {
-                return true;
+                return;
             }
         }
     }
