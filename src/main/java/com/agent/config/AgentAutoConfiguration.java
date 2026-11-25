@@ -167,9 +167,6 @@ public class AgentAutoConfiguration {
             case "gemini" -> com.agent.model.ProviderType.GEMINI;
             case "ollama" -> com.agent.model.ProviderType.OLLAMA;
             default -> {
-                log.warn("provider[{}].type={} 未识别，按 OpenAI Chat Completions 兼容格式处理；"
-                        + "可选值：chat-completions / responses / anthropic-messages / gemini / ollama",
-                        providerName, raw);
                 yield com.agent.model.ProviderType.OPENAI_CHAT_COMPLETIONS;
             }
         };
@@ -231,7 +228,6 @@ public class AgentAutoConfiguration {
                         String alias = asString(modelCfg.get("name"));
                         String modelName = asString(modelCfg.get("model-name"));
                         if (alias == null || modelName == null) {
-                            log.warn("provider[{}] 的模型配置缺少 name 或 model-name，跳过：{}", providerName, modelCfg);
                             continue;
                         }
                         Integer memoryDb = modelCfg.get("memory") instanceof Map<?, ?> mem
@@ -334,7 +330,6 @@ public class AgentAutoConfiguration {
             try {
                 java.nio.file.Path path = java.nio.file.Path.of(p);
                 if (!java.nio.file.Files.exists(path)) {
-                    log.warn("skill.md 路径不存在（跳过）: {}", p);
                     continue;
                 }
                 if (java.nio.file.Files.isDirectory(path)) {
@@ -357,7 +352,6 @@ public class AgentAutoConfiguration {
         try {
             return java.util.Optional.of(java.nio.file.Files.readString(file, StandardCharsets.UTF_8));
         } catch (Exception e) {
-            log.warn("skill.md 读取失败（跳过）: {} -> {}", file, e.getMessage());
             return java.util.Optional.empty();
         }
     }
@@ -549,15 +543,7 @@ public class AgentAutoConfiguration {
         @ConditionalOnMissingBean(MemoryStore.class)
         public DefaultMemoryStore memoryStore(AgentProperties props,
                                               org.springframework.data.redis.core.StringRedisTemplate template,
-                                              ObjectProvider<org.springframework.data.redis.connection.RedisConnectionFactory> factories) {
-            org.springframework.data.redis.connection.RedisConnectionFactory factory =
-                    factories.getIfAvailable();
-            if (factory != null) {
-                // 连接池由宿主 spring.data.redis.* 配置（lettuce.pool 或 jedis.pool），
-                // 此处确认实际使用的池实现，方便排查"池没生效"的问题
-                log.info("记忆复用宿主 Redis 连接工厂: {}（池参数在 spring.data.redis.lettuce.pool 或 jedis.pool 配置）",
-                        factory.getClass().getSimpleName());
-            }
+                                              ObjectProvider<org.springframework.data.redis.connection.RedisConnectionFactory> factories) {  
             return new DefaultMemoryStore(template, toMemoryConfig(props));
         }
 
