@@ -39,6 +39,9 @@ public final class SseFrameDecoder extends ChannelInboundHandlerAdapter {
             if (content instanceof LastHttpContent) {
                 emitTrailing(ctx);
                 ctx.fireUserEventTriggered(StreamEnd.INSTANCE);
+                // 解码器生命周期 = 单次流式响应：自摘除，避免随 keep-alive 连接回池残留，
+                // 吞掉复用请求的 HttpContent（非流式挂起 / 流式双解析）
+                ctx.pipeline().remove(this);
             }
         } finally {
             content.release();

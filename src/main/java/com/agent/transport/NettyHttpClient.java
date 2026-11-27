@@ -100,10 +100,12 @@ public final class NettyHttpClient implements AutoCloseable {
 
     /** 流式：按帧下发，背压由下游 request(n) 驱动。 */
     public Flux<SseFrame> executeStreaming(HttpRequestSpec spec, FrameMode mode) {
-        return Flux.create(sink -> {
+        return Flux.<SseFrame>create(sink -> {
             URI uri = URI.create(spec.uri());
             group.next().execute(() -> acquireStreaming(spec, uri, mode, sink));
-        }, FluxSink.OverflowStrategy.BUFFER);
+        }, FluxSink.OverflowStrategy.BUFFER)
+                // 下游取消时，FluxCreate 缓冲与晚到的帧由 discard 钩子释放，防止帧泄漏
+                .doOnDiscard(SseFrame.class, SseFrame::release);
     }
 
     // ------------------------------------------------------------------ 内部
@@ -123,8 +125,8 @@ public final class NettyHttpClient implements AutoCloseable {
                 return;
             }
             Channel ch = f.getNow();
+            BlockingBridge bridge = new BlockingBridge(sink, pool);
             try {
-                BlockingBridge bridge = new BlockingBridge(sink, pool);
                 ch.pipeline().addLast(bridge);
                 ch.writeAndFlush(buildRequest(spec, uri, false)).addListener(wf -> {
                     if (!wf.isSuccess()) {
@@ -132,6 +134,8 @@ public final class NettyHttpClient implements AutoCloseable {
                     }
                 });
             } catch (Throwable t) {
+                // 置终止标志防 channelInactive 再触发 fail 二次 closeAndRelease（双重归还连接池）
+                bridge.abandon();
                 closeAndRelease(pool, ch);
                 sink.error(mapTransport(t));
             }
@@ -153,9 +157,9 @@ public final class NettyHttpClient implements AutoCloseable {
                 return;
             }
             Channel ch = f.getNow();
+            SseFrameDecoder decoder = new SseFrameDecoder(mode);
+            StreamBridge bridge = new StreamBridge(sink, pool, decoder, mode);
             try {
-                SseFrameDecoder decoder = new SseFrameDecoder(mode);
-                StreamBridge bridge = new StreamBridge(sink, pool, decoder, mode);
                 ch.pipeline().addLast(decoder);
                 ch.pipeline().addLast(bridge);
                 ch.config().setAutoRead(false);
@@ -169,6 +173,8 @@ public final class NettyHttpClient implements AutoCloseable {
                     }
                 });
             } catch (Throwable t) {
+                // 置终止标志防 channelInactive 再触发 fail 二次 closeAndRelease（双重归还连接池）
+                bridge.abandon();
                 closeAndRelease(pool, ch);
                 sink.error(mapTransport(t));
             }
@@ -358,6 +364,12 @@ public final class NettyHttpClient implements AutoCloseable {
             }
         }
 
+        /** 外层装配失败时静默废弃：仅置终止标志，阻止后续 channelInactive 重复清理。 */
+        void abandon() {
+            done = true;
+            cancelFirstResponseTimer();
+        }
+
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             fail(ctx, cause);
@@ -383,8 +395,9 @@ public final class NettyHttpClient implements AutoCloseable {
 
         private io.netty.handler.codec.http.HttpResponse headers;
         private boolean errorMode;
-        private boolean finished;
-        private boolean written;
+        /** 取消（abort）来自 Reactor 线程、读写在 EventLoop，须保证可见性。 */
+        private volatile boolean finished;
+        private volatile boolean written;
         /** 是否已收到响应头：首字节前的 prefill 静默期不判空闲断流（交给 resilience 层首字节超时）。 */
         private boolean responseStarted;
         private final StringBuilder errBody = new StringBuilder();
@@ -429,7 +442,8 @@ public final class NettyHttpClient implements AutoCloseable {
                 return;
             }
             finished = true;
-            decoder.release();
+            // 不在此直接 decoder.release()：本方法跑在 Reactor 线程，与 EventLoop 上的
+            // channelRead 对 cumulation 有竞争；close 会触发 channelInactive/handlerRemoved 清理
             Channel ch = ctx.channel();
             ctx.pipeline().remove(this);
             closeAndRelease(pool, ch);
@@ -455,8 +469,16 @@ public final class NettyHttpClient implements AutoCloseable {
                     raw.release();
                     return;
                 }
-                // 解码器发出的原始帧 → 解析 event/data 字段
-                SseFrame frame = SseStreamHandler.extract(raw, mode);
+                // 解码器发出的原始帧 → 解析 event/data 字段；
+                // 所有权已转移到 extract，异常路径必须兜底释放，否则 raw 泄漏
+                SseFrame frame;
+                try {
+                    frame = SseStreamHandler.extract(raw, mode);
+                } catch (Throwable t) {
+                    ByteBufUtils.releaseQuietly(raw);
+                    fail(ctx, t);
+                    return;
+                }
                 if (frame == null) {
                     return;
                 }
@@ -545,6 +567,11 @@ public final class NettyHttpClient implements AutoCloseable {
                 finished = true;
                 sink.error(mapTransport(cause));
             }
+        }
+
+        /** 外层装配失败时静默废弃：仅置终止标志，阻止后续 channelInactive 重复清理。 */
+        void abandon() {
+            finished = true;
         }
 
         @Override

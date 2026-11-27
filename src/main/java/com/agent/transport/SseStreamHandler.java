@@ -58,7 +58,10 @@ public final class SseStreamHandler {
         }
         if (dataRanges.size() == 1) {
             int[] r = dataRanges.get(0);
-            return new SseFrame(event, raw.retainedSlice(r[0], r[1] - r[0]));
+            ByteBuf slice = raw.retainedSlice(r[0], r[1] - r[0]);
+            // retainedSlice 额外加一引用；raw 的原始引用须在此释放，否则每帧泄漏一个引用计数
+            raw.release();
+            return new SseFrame(event, slice);
         }
         int total = 0;
         for (int[] r : dataRanges) {

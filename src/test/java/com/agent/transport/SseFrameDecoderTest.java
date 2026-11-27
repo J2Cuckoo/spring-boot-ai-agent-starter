@@ -95,4 +95,33 @@ class SseFrameDecoderTest {
         assertThat(SseStreamHandler.extract(none, FrameMode.SSE)).isNull();
         assertThat(none.refCnt()).isZero();
     }
+
+    /**
+     * 回归：单 data 行是 SSE 的标准帧型，曾因 retainedSlice 后未释放原引用，
+     * 每帧泄漏一个引用计数，池化堆外内存永不归还（LEAK: ByteBuf.release() was not called）。
+     * 所有三条解析路径消费后引用计数必须归零。
+     */
+    @Test
+    void extractReleasesRawOnAllPaths() {
+        // 单 data 行（最常见帧型）
+        ByteBuf raw = Unpooled.wrappedBuffer("data: hello\n".getBytes(StandardCharsets.UTF_8));
+        SseFrame frame = SseStreamHandler.extract(raw, FrameMode.SSE);
+        assertThat(frame.dataAsText()).isEqualTo("hello");
+        frame.release();
+        assertThat(raw.refCnt())
+                .as("单 data 行：frame.release() 后底层缓冲引用计数必须归零")
+                .isZero();
+
+        // 多 data 行
+        ByteBuf multi = Unpooled.wrappedBuffer("data: a\ndata: b\n".getBytes(StandardCharsets.UTF_8));
+        SseFrame m = SseStreamHandler.extract(multi, FrameMode.SSE);
+        m.release();
+        assertThat(multi.refCnt()).isZero();
+
+        // NDJSON 直接持有
+        ByteBuf nd = Unpooled.wrappedBuffer("{\"a\":1}\n".getBytes(StandardCharsets.UTF_8));
+        SseFrame n = SseStreamHandler.extract(nd, FrameMode.NDJSON);
+        n.release();
+        assertThat(nd.refCnt()).isZero();
+    }
 }
